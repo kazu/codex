@@ -243,6 +243,7 @@ struct StartupMigrationRetryGate {
 /// as cwd, provider, and memory mode is supplied when live persistence is opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalThreadStoreConfig {
+    pub rollout_compression: Option<std::num::NonZeroUsize>,
     pub codex_home: PathBuf,
     pub sqlite: SqliteConfig,
     /// Provider used only when older local metadata does not contain one.
@@ -252,6 +253,7 @@ pub struct LocalThreadStoreConfig {
 impl LocalThreadStoreConfig {
     pub fn from_config(config: &impl codex_rollout::RolloutConfigView) -> Self {
         Self {
+            rollout_compression: config.rollout_compression(),
             codex_home: config.codex_home().to_path_buf(),
             sqlite: config.sqlite_config().clone(),
             default_model_provider_id: config.model_provider_id().to_string(),

@@ -98,6 +98,7 @@ fn move_to_timestamp(
 async fn indexed_store(home: &Path) -> LocalThreadStore {
     let config = test_config(home);
     let rollout_config = RolloutConfig {
+        rollout_compression: None,
         codex_home: config.codex_home.clone(),
         sqlite: config.sqlite.clone(),
         cwd: home.to_path_buf(),
