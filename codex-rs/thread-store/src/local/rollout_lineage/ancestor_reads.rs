@@ -36,6 +36,29 @@ pub(super) struct FailedAncestor {
 }
 
 impl AncestorReads {
+    pub(in crate::local) fn open_reverse(
+        &self,
+        path: &Path,
+        end: Option<u64>,
+        is_cancelled: impl Fn() -> bool,
+    ) -> io::Result<codex_rollout::RolloutReverseScanner> {
+        let minimum_len = self.cutoff(path).map(|end| end.end_byte_offset);
+        let result = codex_rollout::RolloutReverseScanner::open_with_bounds_cancellable(
+            path,
+            end,
+            minimum_len,
+            is_cancelled,
+        );
+        if minimum_len.is_some() {
+            result.map_err(|err| {
+                self.record_failure(path);
+                io::Error::new(err.kind(), format!("{}: {err}", path.display()))
+            })
+        } else {
+            result
+        }
+    }
+
     pub(super) fn new(cutoffs: HashMap<PathBuf, (HistoryPosition, ThreadId)>) -> Self {
         Self((!cutoffs.is_empty()).then(|| {
             Arc::new(TrackedAncestors {

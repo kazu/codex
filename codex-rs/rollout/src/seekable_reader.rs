@@ -1,4 +1,4 @@
-//! Reads rollout bytes and positions independently of their plain or compressed representation.
+//! Reads rollout bytes and positions independently of their stored representation.
 //!
 //! Offsets always address the original JSONL bytes. Readers retain an open file, or an anonymous
 //! decoded snapshot, so a concurrent compression cannot invalidate an in-progress scan.
@@ -26,11 +26,12 @@ pub(crate) fn get_rollout_paths(path: &Path) -> io::Result<[PathBuf; 4]> {
 pub(crate) enum RolloutReader {
     Plain(File),
     Compressed(File),
+    Framed(File),
     Pending(File),
 }
 
 impl RolloutReader {
-    fn open(path: &Path) -> io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
         for attempt in 0..4 {
             match Self::open_once(path) {
                 Ok((reader, _)) => return Ok(reader),
@@ -50,9 +51,12 @@ impl RolloutReader {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(err),
         }
-        for compressed_path in [legacy_path, archive_path] {
+        for (compressed_path, wrap) in [
+            (legacy_path, Self::Compressed as fn(File) -> Self),
+            (archive_path, Self::Framed as fn(File) -> Self),
+        ] {
             match File::open(&compressed_path) {
-                Ok(file) => return Ok((Self::Compressed(file), compressed_path)),
+                Ok(file) => return Ok((wrap(file), compressed_path)),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
             }
@@ -64,14 +68,19 @@ impl RolloutReader {
 
     pub(crate) fn file(&self) -> &File {
         match self {
-            Self::Plain(file) | Self::Compressed(file) | Self::Pending(file) => file,
+            Self::Plain(file)
+            | Self::Compressed(file)
+            | Self::Framed(file)
+            | Self::Pending(file) => file,
         }
     }
 
     pub(crate) fn into_read(self) -> io::Result<Box<dyn Read + Send>> {
         match self {
             Self::Plain(file) | Self::Pending(file) => Ok(Box::new(file)),
-            Self::Compressed(file) => Ok(Box::new(zstd::stream::read::Decoder::new(file)?)),
+            Self::Compressed(file) | Self::Framed(file) => {
+                Ok(Box::new(zstd::stream::read::Decoder::new(file)?))
+            }
         }
     }
 }
@@ -105,10 +114,17 @@ pub fn open_rollout_seekable_reader(
     path: &Path,
     is_cancelled: impl Fn() -> bool,
 ) -> io::Result<impl Read + Seek> {
+    open_rollout_seekable_reader_from_source(RolloutReader::open(path)?, is_cancelled)
+}
+
+pub(crate) fn open_rollout_seekable_reader_from_source(
+    source: RolloutReader,
+    is_cancelled: impl Fn() -> bool,
+) -> io::Result<impl Read + Seek> {
     if is_cancelled() {
         return Err(io::Error::other("rollout read cancelled"));
     }
-    let file = match RolloutReader::open(path)? {
+    let file = match source {
         RolloutReader::Plain(file) => file,
         RolloutReader::Pending(file) => {
             let mut decoded = tempfile::tempfile()?;
@@ -120,7 +136,7 @@ pub fn open_rollout_seekable_reader(
             decoded.rewind()?;
             decoded
         }
-        RolloutReader::Compressed(file) => {
+        RolloutReader::Compressed(file) | RolloutReader::Framed(file) => {
             let mut decoded = tempfile::tempfile()?;
             // Empty and skippable frames can consume input without producing decoded bytes.
             let file = CancellableReader {
@@ -142,12 +158,19 @@ pub fn open_rollout_seekable_reader(
     })
 }
 
-struct CancellableReader<R, F> {
+pub(crate) struct CancellableReader<R, F> {
     inner: R,
     is_cancelled: F,
 }
 
 impl<R, F: Fn() -> bool> CancellableReader<R, F> {
+    pub(crate) fn new(inner: R, is_cancelled: F) -> Self {
+        Self {
+            inner,
+            is_cancelled,
+        }
+    }
+
     fn check_cancelled(&self) -> io::Result<()> {
         if (self.is_cancelled)() {
             // Interrupted is retried by io::copy and read_exact, defeating cancellation.
@@ -176,9 +199,8 @@ impl<R: Seek, F: Fn() -> bool> Seek for CancellableReader<R, F> {
 
 /// Checks a frozen prefix's byte bound using a blocking read of the logical JSONL representation.
 ///
-/// A known first-frame size is a lower bound even for concatenated zstd frames. New compressed
-/// rollouts include that size, so ordinary lineage validation only reads the header. Older frames
-/// without a size, and prefixes extending beyond the first frame, are decoded up to the bound.
+/// Framed rollouts provide their decoded length in the index. Legacy zstd uses a known first-frame
+/// size as a lower bound, or decodes only up to the requested bound when needed.
 pub fn rollout_contains_prefix(
     path: &Path,
     end_byte_offset: u64,
@@ -194,6 +216,10 @@ pub fn rollout_contains_prefix(
                 .metadata()?
                 .len()
                 .saturating_sub(file.stream_position()?)),
+        RolloutReader::Framed(mut file) => Ok(end_byte_offset
+            <= zeekstd::SeekTable::from_seekable(&mut file)
+                .map_err(io::Error::other)?
+                .size_decomp()),
         RolloutReader::Compressed(file) => {
             let mut file = CancellableReader {
                 inner: file,
