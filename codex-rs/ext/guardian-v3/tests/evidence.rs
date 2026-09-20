@@ -41,6 +41,7 @@ async fn captures_originals_without_generated_context_or_later_appends() -> anyh
     let owner = ThreadId::new();
     let store = LocalThreadStore::new(
         LocalThreadStoreConfig {
+            rollout_compression: None,
             codex_home: dir.path().to_path_buf(),
             sqlite: SqliteConfig::new_for_testing(dir.path().to_path_buf().try_into()?),
             default_model_provider_id: "test-provider".into(),

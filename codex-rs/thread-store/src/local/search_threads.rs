@@ -68,6 +68,7 @@ pub(super) async fn search_threads(
     };
     let state_db = store.state_db().await;
     let rollout_config = RolloutConfig {
+        rollout_compression: store.config.rollout_compression,
         codex_home: store.config.codex_home.clone(),
         sqlite: store.config.sqlite.clone(),
         cwd: store.config.codex_home.clone(),
