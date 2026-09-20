@@ -22,6 +22,7 @@ pub enum ScanOutcome<T> {
 /// Read-only scanner for newline-delimited JSON records, starting from the end.
 pub struct ReverseJsonlScanner<R> {
     reader: R,
+    start: u64,
     next_chunk_end: u64,
     chunk_position: usize,
     chunk: Vec<u8>,
@@ -43,9 +44,13 @@ where
     ///
     /// This lets callers scan a frozen JSONL prefix without reading records appended after that
     /// prefix was captured.
-    pub fn new_at(mut reader: R, end_byte_offset: u64) -> io::Result<Self> {
+    pub fn new_at(reader: R, end_byte_offset: u64) -> io::Result<Self> {
+        Self::new_between(reader, /*start*/ 0, end_byte_offset)
+    }
+
+    pub(crate) fn new_between(mut reader: R, start: u64, end_byte_offset: u64) -> io::Result<Self> {
         let file_len = reader.seek(SeekFrom::End(0))?;
-        if end_byte_offset > file_len {
+        if start > end_byte_offset || end_byte_offset > file_len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "reverse JSONL scan end is past the file",
@@ -53,6 +58,7 @@ where
         }
         Ok(Self {
             reader,
+            start,
             next_chunk_end: end_byte_offset,
             chunk_position: 0,
             chunk: vec![0; READ_CHUNK_SIZE],
@@ -78,7 +84,7 @@ where
     {
         loop {
             if self.chunk_position == 0 {
-                if self.next_chunk_end == 0 {
+                if self.next_chunk_end == self.start {
                     if self.discarding_oversized_record {
                         self.discarding_oversized_record = false;
                         return Ok(None);
@@ -86,8 +92,9 @@ where
                     return Ok(self.finish_record());
                 }
 
-                let read_size = usize::try_from(self.next_chunk_end.min(READ_CHUNK_SIZE as u64))
-                    .map_err(io::Error::other)?;
+                let read_size =
+                    usize::try_from((self.next_chunk_end - self.start).min(READ_CHUNK_SIZE as u64))
+                        .map_err(io::Error::other)?;
                 self.next_chunk_end -= read_size as u64;
                 self.reader.seek(SeekFrom::Start(self.next_chunk_end))?;
                 self.reader.read_exact(&mut self.chunk[..read_size])?;

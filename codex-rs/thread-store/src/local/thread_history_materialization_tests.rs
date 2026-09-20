@@ -2343,6 +2343,71 @@ async fn catch_up_skips_invalid_complete_suffixes_and_projects_later_history() {
 }
 
 #[tokio::test]
+async fn framed_projection_resumes_old_byte_checkpoint_across_rejected_records() {
+    let home = TempDir::new().expect("temp dir");
+    let store = projection_store(home.path()).await;
+    let thread_id = ThreadId::default();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .persist_thread(thread_id, PersistContext::Standard)
+        .await
+        .expect("persist metadata");
+    let pool = codex_state::open_thread_history_db(&codex_state::SqliteConfig::new_for_testing(
+        home.path().abs(),
+    ))
+    .await
+    .expect("open history db");
+    let before = projection_state(&pool, thread_id).await;
+    let path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("rollout path");
+    let recorder = store
+        .live_recorders
+        .lock()
+        .await
+        .get(&thread_id)
+        .expect("live recorder")
+        .recorder
+        .clone();
+    recorder
+        .shutdown()
+        .await
+        .expect("close writer before conversion");
+    let suffix = format!(
+        "{{broken}}\n\n{}\n{}\n{}\n{}\n",
+        rollout_line(Some(1), turn_started("turn-1")),
+        rollout_line(Some(1), turn_started("duplicate")),
+        rollout_line(/*ordinal*/ None, turn_started("missing")),
+        rollout_line(Some(2), turn_started("turn-2")),
+    );
+    append_suffix(path.as_path(), &suffix);
+    compress_rollout(path.as_path());
+    let archive = path.with_extension("seek.zst");
+    fs::rename(path.with_extension("jsonl.zst"), &archive).expect("name framed fixture");
+    codex_rollout::recovery(&archive, std::num::NonZeroUsize::new(/*n*/ 2).unwrap())
+        .expect("frame fixture records");
+    super::materialize_to_sqlite(&store, thread_id, path.as_path())
+        .await
+        .expect("project framed suffix");
+    let expected = (before.0 + i64::try_from(suffix.len()).unwrap(), 3);
+    assert_eq!(projection_state(&pool, thread_id).await, expected);
+    let turns = sqlx::query_scalar::<_, String>(
+        "SELECT turn_id FROM thread_turns WHERE thread_id = ? ORDER BY rollout_ordinal",
+    )
+    .bind(thread_id.to_string())
+    .fetch_all(&pool)
+    .await
+    .expect("read projected turns");
+    assert_eq!(turns, vec!["turn-1".to_owned(), "turn-2".to_owned()]);
+    super::materialize_to_sqlite(&store, thread_id, path.as_path())
+        .await
+        .expect("checkpoint at EOF");
+    assert_eq!(projection_state(&pool, thread_id).await, expected);
+    assert!(!path.exists());
+}
+
+#[tokio::test]
 async fn jsonl_failure_does_not_create_projection_database() {
     let home = TempDir::new().expect("temp dir");
     fs::write(home.path().join("sessions"), "not a directory").expect("block sessions dir");

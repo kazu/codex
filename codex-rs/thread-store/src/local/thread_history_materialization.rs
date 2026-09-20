@@ -3,8 +3,6 @@
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::path::Path;
 
 use chrono::DateTime;
@@ -90,22 +88,23 @@ fn read_projection_batches(
     is_cancelled: impl Fn() -> bool,
     mut emit: impl FnMut(Vec<RolloutProjectionStep>, u64) -> ThreadStoreResult<()>,
 ) -> ThreadStoreResult<()> {
-    let mut file = match codex_rollout::open_rollout_seekable_reader(rollout_path, &is_cancelled) {
-        Ok(file) => file,
+    let (file, file_end_offset) = match codex_rollout::open_rollout_projection_reader(
+        rollout_path,
+        start_offset,
+        &is_cancelled,
+    ) {
+        Ok(reader) => reader,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound && start_offset == 0 => {
             return Ok(());
         }
         Err(err) => return Err(thread_store_io_error(err)),
     };
-    let file_end_offset = file.seek(SeekFrom::End(0)).map_err(thread_store_io_error)?;
     let byte_count =
         file_end_offset
             .checked_sub(start_offset)
             .ok_or_else(|| ThreadStoreError::Internal {
                 message: "durable rollout shrank before projection".to_string(),
             })?;
-    file.seek(SeekFrom::Start(start_offset))
-        .map_err(thread_store_io_error)?;
     // Freeze this pass at the captured end, without retaining the entire durable suffix.
     let mut reader = BufReader::new(file.take(byte_count));
     let mut line_bytes = Vec::new();
