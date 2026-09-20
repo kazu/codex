@@ -91,6 +91,14 @@ async fn compressed_recorder_preserves_deferred_creation_and_record_order() -> a
         .map(crate::parse_rollout_line)
         .collect::<Result<Vec<_>, _>>()?;
     assert_eq!(initial.len(), 2);
+    let (loaded, _, parse_errors) = RolloutRecorder::load_rollout_items(&path).await?;
+    assert_eq!(
+        (serde_json::to_value(loaded)?, parse_errors),
+        (
+            serde_json::to_value(initial.iter().map(|line| &line.item).collect::<Vec<_>>())?,
+            0
+        )
+    );
     assert_eq!(
         serde_json::to_value(&initial[1].item)?,
         serde_json::to_value(agent_message_item("first"))?
@@ -123,6 +131,14 @@ async fn compressed_recorder_preserves_deferred_creation_and_record_order() -> a
     assert_eq!(
         serde_json::to_value(&records)?,
         serde_json::to_value(&expected)?
+    );
+    let (loaded, _, parse_errors) = RolloutRecorder::load_rollout_items(&path).await?;
+    assert_eq!(
+        (serde_json::to_value(loaded)?, parse_errors),
+        (
+            serde_json::to_value(expected.iter().map(|line| &line.item).collect::<Vec<_>>())?,
+            0
+        )
     );
     assert_eq!(
         records.iter().map(|line| line.ordinal).collect::<Vec<_>>(),
