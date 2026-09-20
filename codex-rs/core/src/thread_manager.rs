@@ -727,6 +727,7 @@ impl ThreadManager {
         // process store should construct ThreadManager::new with an explicit store.
         let thread_store: Arc<dyn ThreadStore> = Arc::new(LocalThreadStore::new(
             LocalThreadStoreConfig {
+                rollout_compression: None,
                 codex_home: codex_home.clone(),
                 sqlite: codex_state::SqliteConfig::new_for_testing(absolute_codex_home),
                 default_model_provider_id: OPENAI_PROVIDER_ID.to_string(),

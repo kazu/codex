@@ -21,6 +21,40 @@ use crate::UpdateThreadMetadataParams;
 use crate::local::test_support::test_config;
 
 #[tokio::test]
+async fn local_store_forwards_compression_to_new_recorder() -> Result<(), Box<dyn std::error::Error>>
+{
+    let home = TempDir::new()?;
+    let rollout_config = codex_rollout::RolloutConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: test_config(home.path()).sqlite,
+        cwd: home.path().to_path_buf(),
+        model_provider_id: "test-provider".to_string(),
+        generate_memories: true,
+        rollout_compression: std::num::NonZeroUsize::new(/*n*/ 2),
+    };
+    let config = LocalThreadStoreConfig::from_config(&rollout_config);
+    let store = LocalThreadStore::new(config, /*state_db*/ None);
+    let thread_id = ThreadId::new();
+    let mut params = create_thread_params(thread_id);
+    params.metadata.cwd = Some(home.path().to_path_buf());
+    store.create_thread(params).await?;
+    let path = store.live_rollout_path(thread_id).await?;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![user_message_item("compressed")],
+        })
+        .await?;
+    store
+        .persist_thread(thread_id, PersistContext::Standard)
+        .await?;
+    store.shutdown_thread(thread_id).await?;
+    assert!(!path.exists());
+    assert!(path.with_extension("seek.zst").exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn pending_thread_metadata_is_consumed_by_first_metadata_update() {
     let (_home, store, runtime) = store_with_runtime().await;
     let thread_id = ThreadId::new();

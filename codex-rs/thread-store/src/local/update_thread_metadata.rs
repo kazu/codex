@@ -894,6 +894,7 @@ async fn update_rollout_metadata(
         Some(recorder) => recorder,
         None => RolloutRecorder::new_with_writer_lock(
             &RolloutConfig {
+                rollout_compression: store.config.rollout_compression,
                 codex_home: store.config.codex_home.clone(),
                 sqlite: store.config.sqlite.clone(),
                 cwd: metadata.meta.cwd.clone(),

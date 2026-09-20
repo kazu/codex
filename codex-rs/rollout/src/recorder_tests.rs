@@ -44,7 +44,180 @@ fn test_config(codex_home: &Path) -> RolloutConfig {
         cwd: codex_home.to_path_buf(),
         model_provider_id: "test-provider".to_string(),
         generate_memories: true,
+        rollout_compression: None,
     }
+}
+
+#[tokio::test]
+async fn compressed_recorder_preserves_deferred_creation_and_record_order() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let mut config = test_config(home.path());
+    config.rollout_compression = std::num::NonZeroUsize::new(/*n*/ 3);
+    let config = Arc::new(config);
+    let config = RolloutConfig::from_view(&&config);
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        )
+        .with_history_mode(ThreadHistoryMode::Paginated),
+    )
+    .await?;
+    let path = recorder.rollout_path().to_path_buf();
+    let archive = path.with_extension("seek.zst");
+    let pending = archive.with_file_name(format!(
+        ".pendings.{}",
+        archive.file_name().unwrap().to_str().unwrap()
+    ));
+    recorder.flush().await?;
+    assert!(!path.parent().unwrap().exists());
+    recorder
+        .record_canonical_items(&[agent_message_item("first")])
+        .await?;
+    recorder.persist().await?;
+    assert!(!path.exists());
+    assert!(!archive.exists());
+    let bytes = fs::read(&pending)?;
+    assert_eq!(&bytes[..8], &0u64.to_le_bytes());
+    let initial = std::str::from_utf8(&bytes[8..])?
+        .lines()
+        .map(crate::parse_rollout_line)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(initial.len(), 2);
+    assert_eq!(
+        serde_json::to_value(&initial[1].item)?,
+        serde_json::to_value(agent_message_item("first"))?
+    );
+    recorder
+        .record_canonical_items(&[agent_message_item("second")])
+        .await?;
+    recorder.flush().await?;
+    assert!(archive.exists());
+    assert!(!pending.exists());
+    recorder
+        .record_canonical_items(&[agent_message_item("third")])
+        .await?;
+    recorder.shutdown().await?;
+    let reader = seekzstdsep::RecordReader::open(archive.clone(), b"\n")?;
+    assert_eq!(reader.records_per_frame(), 3);
+    let bytes = zstd::stream::decode_all(File::open(&archive)?)?;
+    let records = std::str::from_utf8(&bytes)?
+        .lines()
+        .map(crate::parse_rollout_line)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut expected = initial;
+    for (ordinal, message) in [(2, "second"), (3, "third")] {
+        expected.push(RolloutLine {
+            timestamp: records[ordinal].timestamp.clone(),
+            ordinal: Some(ordinal as u64),
+            item: agent_message_item(message),
+        });
+    }
+    assert_eq!(
+        serde_json::to_value(&records)?,
+        serde_json::to_value(&expected)?
+    );
+    assert_eq!(
+        records.iter().map(|line| line.ordinal).collect::<Vec<_>>(),
+        vec![Some(0), Some(1), Some(2), Some(3)]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn compressed_recorder_retries_promotion_without_resending_records() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let mut config = test_config(home.path());
+    config.rollout_compression = std::num::NonZeroUsize::new(/*n*/ 3);
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+    )
+    .await?;
+    let archive = recorder.rollout_path().with_extension("seek.zst");
+    recorder
+        .record_canonical_items(&[agent_message_item("once")])
+        .await?;
+    recorder.persist().await?;
+    fs::create_dir_all(&archive)?;
+    recorder
+        .record_canonical_items(&[agent_message_item("twice")])
+        .await?;
+    assert!(recorder.persist().await.is_err());
+    fs::remove_dir(&archive)?;
+    recorder.flush().await?;
+    recorder.shutdown().await?;
+    let bytes = zstd::stream::decode_all(File::open(archive)?)?;
+    let records = std::str::from_utf8(&bytes)?
+        .lines()
+        .map(crate::parse_rollout_line)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        serde_json::to_value(&records[1].item)?,
+        serde_json::to_value(agent_message_item("once"))?
+    );
+    assert_eq!(
+        serde_json::to_value(&records[2].item)?,
+        serde_json::to_value(agent_message_item("twice"))?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn compressed_append_failure_stops_automatic_replay() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let mut config = test_config(home.path());
+    config.rollout_compression = std::num::NonZeroUsize::new(/*n*/ 1);
+    let recorder = RolloutRecorder::new(
+        &config,
+        RolloutRecorderParams::new(
+            ThreadId::new(),
+            /*forked_from_id*/ None,
+            /*parent_thread_id*/ None,
+            SessionSource::Exec,
+            /*thread_source*/ None,
+            "test".to_string(),
+            BaseInstructions::default(),
+            Vec::new(),
+        ),
+    )
+    .await?;
+    recorder.persist().await?;
+    let archive = recorder.rollout_path().with_extension("seek.zst");
+    let original = fs::read(&archive)?;
+    fs::write(&archive, b"broken seek table")?;
+    recorder
+        .record_canonical_items(&[agent_message_item("must not replay")])
+        .await?;
+    let error = recorder
+        .flush()
+        .await
+        .expect_err("invalid archive must fail");
+    assert!(error.to_string().contains("rollout-recovery"));
+    fs::write(&archive, &original)?;
+    assert!(
+        recorder.flush().await.is_err(),
+        "failed writer must remain stopped"
+    );
+    assert_eq!(fs::read(&archive)?, original);
+    Ok(())
 }
 
 fn paginated_session_meta_item(thread_id: ThreadId, cwd: &Path) -> RolloutItem {
@@ -949,10 +1122,12 @@ async fn writer_state_retries_write_error_before_reporting_flush_success() -> st
     File::create(&rollout_path)?;
     let read_only_file = std::fs::OpenOptions::new().read(true).open(&rollout_path)?;
     let mut state = RolloutWriterState {
-        writer: Some(JsonlWriter {
-            file: tokio::fs::File::from_std(read_only_file),
-        }),
+        writer: Some(JsonlWriter::Plain(tokio::fs::File::from_std(
+            read_only_file,
+        ))),
+        rollout_compression: None,
         deferred_creation: false,
+        writer_lock: None,
         pending_items: Vec::new(),
         meta: None,
         cwd: home.path().to_path_buf(),
