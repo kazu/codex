@@ -3,8 +3,6 @@
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -129,8 +127,17 @@ fn read_projection_batches(
     mut emit: impl FnMut(Vec<RolloutProjectionStep>, u64) -> ThreadStoreResult<()>,
 ) -> ThreadStoreResult<()> {
     let rollout_path = &rollout.path;
-    let mut file = match rollout.reads.open(rollout_path, &is_cancelled) {
-        Ok(file) => file,
+    let cutoff = rollout
+        .reads
+        .cutoff(rollout_path)
+        .map(|end| end.end_byte_offset);
+    let (file, actual_end) = match codex_rollout::open_rollout_projection_reader_with_minimum(
+        rollout_path,
+        start_offset,
+        cutoff,
+        &is_cancelled,
+    ) {
+        Ok(reader) => reader,
         Err(err)
             if err.kind() == std::io::ErrorKind::NotFound
                 && start_offset == 0
@@ -138,12 +145,17 @@ fn read_projection_batches(
         {
             return Ok(());
         }
-        Err(err) => return Err(thread_store_io_error(err)),
+        Err(err) => {
+            rollout.reads.record_failure(rollout_path);
+            let err = if cutoff.is_some() {
+                std::io::Error::new(err.kind(), format!("{}: {err}", rollout_path.display()))
+            } else {
+                err
+            };
+            return Err(thread_store_io_error(err));
+        }
     };
-    let file_end_offset = match rollout.reads.cutoff(rollout_path) {
-        Some(end) => end.end_byte_offset,
-        None => file.seek(SeekFrom::End(0)).map_err(thread_store_io_error)?,
-    };
+    let file_end_offset = cutoff.unwrap_or(actual_end);
     let byte_count = file_end_offset.checked_sub(start_offset).ok_or_else(|| {
         rollout.reads.record_failure(rollout_path);
         ThreadStoreError::Internal {
@@ -153,8 +165,6 @@ fn read_projection_batches(
             ),
         }
     })?;
-    file.seek(SeekFrom::Start(start_offset))
-        .map_err(thread_store_io_error)?;
     // Freeze this pass at the captured end, without retaining the entire durable suffix.
     let mut reader = BufReader::new(file.take(byte_count));
     let mut line_bytes = Vec::new();
