@@ -10,6 +10,66 @@ fn archive_records(path: &Path) -> anyhow::Result<(usize, Vec<u8>)> {
 }
 
 #[test]
+fn recovery_rebuilds_a_missing_seek_table_without_locking() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.seek.zst");
+    let records = b"{}\n{\"index\":1}\n{\"index\":2}\n";
+    std::fs::write(
+        &path,
+        zstd::stream::encode_all(records.as_slice(), /*level*/ 0)?,
+    )?;
+    let lock = dir.path().join(".lock.rollout.seek.zst");
+    std::fs::write(&lock, b"untouched")?;
+    recovery(&path, NonZeroUsize::new(/*n*/ 2).unwrap())?;
+    assert_eq!(
+        archive_records(&dir.path().join("rollout.jsonl"))?,
+        (2, records.to_vec())
+    );
+    assert_eq!(std::fs::read(lock)?, b"untouched");
+    Ok(())
+}
+
+#[test]
+fn recovery_stops_on_decode_error_without_replacing_the_source() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.seek.zst");
+    let mut broken = zstd::stream::encode_all(b"{}\n{}\n".as_slice(), /*level*/ 0)?;
+    broken.pop();
+    std::fs::write(&path, &broken)?;
+    assert!(recovery(&path, NonZeroUsize::new(/*n*/ 2).unwrap()).is_err());
+    assert_eq!(std::fs::read(path)?, broken);
+    Ok(())
+}
+
+#[test]
+fn compressed_append_errors_explain_manual_recovery() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.jsonl");
+    let mut writer = FramedWriter::open(&path, NonZeroUsize::new(/*n*/ 1).unwrap())?;
+    writer.append(b"{}\n")?;
+    writer.promote()?;
+    writer.file = File::open(path.with_extension("seek.zst"))?;
+    let error = writer.append(b"{}\n").unwrap_err().to_string();
+    assert!(error.contains("codex debug rollout-recovery"), "{error}");
+    assert!(error.contains("--records-per-frame 1"), "{error}");
+    assert!(error.contains("stop all writers"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn recovery_rejects_empty_or_incomplete_records_without_replacement() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.seek.zst");
+    for records in [b"".as_slice(), b"{}", b"{}\n{"] {
+        let original = zstd::stream::encode_all(records, /*level*/ 0)?;
+        std::fs::write(&path, &original)?;
+        assert!(recovery(&path, NonZeroUsize::new(/*n*/ 2).unwrap()).is_err());
+        assert_eq!(std::fs::read(&path)?, original);
+    }
+    Ok(())
+}
+
+#[test]
 fn appends_directly_after_the_first_archive() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("rollout.jsonl");
