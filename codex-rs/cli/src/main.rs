@@ -71,6 +71,7 @@ mod migrate_rollouts;
 mod plugin_cmd;
 mod queue_cmd;
 mod remote_control_cmd;
+mod rollout_recovery;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod state_db_recovery;
@@ -254,6 +255,9 @@ struct DebugCommand {
 
 #[derive(Debug, clap::Subcommand)]
 enum DebugSubcommand {
+    /// Rebuild a rollout archive. Stop writers first; errors abort without replacement.
+    RolloutRecovery(rollout_recovery::RecoveryCommand),
+
     /// Render the raw model catalog as JSON.
     Models(DebugModelsCommand),
 
@@ -1706,6 +1710,14 @@ async fn cli_main(
             }
         }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
+            DebugSubcommand::RolloutRecovery(cmd) => {
+                reject_remote_mode_for_subcommand(
+                    root_remote.as_deref(),
+                    root_remote_auth_token_env.as_deref(),
+                    "debug rollout-recovery",
+                )?;
+                codex_rollout::recovery(&cmd.archive, cmd.records_per_frame)?;
+            }
             DebugSubcommand::Models(cmd) => {
                 reject_remote_mode_for_subcommand(
                     root_remote.as_deref(),
