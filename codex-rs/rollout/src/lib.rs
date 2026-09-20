@@ -9,6 +9,7 @@ use serde_json::Value;
 pub(crate) mod compression;
 pub(crate) mod config;
 mod framed;
+pub use framed::recovery;
 pub(crate) mod list;
 mod maintenance;
 pub(crate) mod metadata;
