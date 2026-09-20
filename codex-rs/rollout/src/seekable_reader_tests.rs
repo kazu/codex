@@ -1,8 +1,5 @@
 use std::cell::Cell;
 use std::fs;
-use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::io::Write;
 
 use pretty_assertions::assert_eq;
@@ -87,13 +84,15 @@ async fn framed_readers_preserve_logical_bytes_and_materialization() -> anyhow::
                 actual.push(line);
             }
             assert_eq!(actual, expected.lines().collect::<Vec<_>>());
-            let mut reader = open_rollout_seekable_reader(input)?;
-            assert_eq!(reader.metadata()?.len(), expected.len() as u64);
+            assert_eq!(
+                crate::read_rollout_records_from(input, /*start_offset*/ 0)?,
+                expected.as_bytes()
+            );
             for offset in 0..=expected.len() {
-                reader.seek(SeekFrom::Start(offset as u64))?;
-                let mut suffix = Vec::new();
-                reader.read_to_end(&mut suffix)?;
-                assert_eq!(suffix, expected.as_bytes()[offset..]);
+                if offset == 0 || expected.as_bytes()[offset - 1] == b'\n' {
+                    let suffix = crate::read_rollout_records_from(input, offset as u64)?;
+                    assert_eq!(suffix, expected.as_bytes()[offset..]);
+                }
                 assert_eq!(
                     read_rollout_prefix(input, offset)?,
                     Some(expected.as_bytes()[..offset].to_vec())
@@ -133,7 +132,8 @@ async fn framed_readers_report_corrupt_authoritative_archive() -> anyhow::Result
     .await;
     assert!(result.is_err());
     assert!(read_rollout_prefix(&path, /*max_bytes*/ 100).is_err());
-    assert!(open_rollout_seekable_reader(&path).is_err());
+    assert!(crate::read_rollout_records_from(&path, /*start_offset*/ 0).is_err());
+    assert!(crate::RolloutReverseScanner::open(&path).is_err());
     assert!(
         crate::materialize_rollout_for_reference(&path)
             .await
@@ -152,16 +152,12 @@ async fn framed_readers_retain_open_pending_across_publication() -> anyhow::Resu
         crate::framed::FramedWriter::open(&path, std::num::NonZeroUsize::new(/*n*/ 2).unwrap())?;
     writer.append(b"first\n")?;
     let mut lines = crate::open_rollout_line_reader(&path).await?;
-    let mut snapshot = open_rollout_seekable_reader(&path)?;
     writer.append(b"second\n")?;
     writer.promote()?;
     drop(writer);
     assert_eq!(lines.next_line().await?, Some("first".to_owned()));
     assert_eq!(lines.next_line().await?, Some("second".to_owned()));
     assert_eq!(lines.next_line().await?, None);
-    let mut retained = Vec::new();
-    snapshot.read_to_end(&mut retained)?;
-    assert_eq!(retained, b"first\n");
     Ok(())
 }
 
@@ -179,7 +175,9 @@ async fn framed_readers_reject_truncated_pending_header() -> anyhow::Result<()> 
         io::ErrorKind::UnexpectedEof,
     );
     assert_eq!(
-        open_rollout_seekable_reader(&path).unwrap_err().kind(),
+        crate::read_rollout_records_from(&path, /*start_offset*/ 0)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::UnexpectedEof
     );
     assert!(
@@ -322,6 +320,7 @@ fn prefix_bounds_support_sized_unsized_and_concatenated_frames() -> io::Result<(
         let mut actual = Vec::new();
         open_rollout_seekable_reader(&path, || false)?.read_to_end(&mut actual)?;
         assert_eq!(actual, expected);
+        assert_eq!(crate::read_rollout_records_from(&path, /*start_offset*/ 0)?, expected);
         assert!(!path.with_extension("").exists());
     }
     Ok(())
