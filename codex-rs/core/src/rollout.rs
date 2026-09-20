@@ -24,6 +24,10 @@ pub use codex_rollout::read_session_meta_line;
 pub use codex_rollout::rollout_date_parts;
 
 impl codex_rollout::RolloutConfigView for Config {
+    fn rollout_compression(&self) -> Option<std::num::NonZeroUsize> {
+        self.rollout_compression
+    }
+
     fn codex_home(&self) -> &std::path::Path {
         self.codex_home.as_path()
     }

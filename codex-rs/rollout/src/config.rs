@@ -1,4 +1,5 @@
 use codex_state::SqliteConfig;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,6 +10,8 @@ pub trait RolloutConfigView {
     fn cwd(&self) -> &Path;
     fn model_provider_id(&self) -> &str;
     fn generate_memories(&self) -> bool;
+    /// Frame size for new compressed rollouts; None selects plain JSONL.
+    fn rollout_compression(&self) -> Option<NonZeroUsize>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,6 +21,7 @@ pub struct RolloutConfig {
     pub cwd: PathBuf,
     pub model_provider_id: String,
     pub generate_memories: bool,
+    pub rollout_compression: Option<NonZeroUsize>,
 }
 
 pub type Config = RolloutConfig;
@@ -30,11 +34,16 @@ impl RolloutConfig {
             cwd: view.cwd().to_path_buf(),
             model_provider_id: view.model_provider_id().to_string(),
             generate_memories: view.generate_memories(),
+            rollout_compression: view.rollout_compression(),
         }
     }
 }
 
 impl RolloutConfigView for RolloutConfig {
+    fn rollout_compression(&self) -> Option<NonZeroUsize> {
+        self.rollout_compression
+    }
+
     fn codex_home(&self) -> &Path {
         self.codex_home.as_path()
     }
@@ -57,6 +66,10 @@ impl RolloutConfigView for RolloutConfig {
 }
 
 impl<T: RolloutConfigView + ?Sized> RolloutConfigView for &T {
+    fn rollout_compression(&self) -> Option<NonZeroUsize> {
+        (*self).rollout_compression()
+    }
+
     fn codex_home(&self) -> &Path {
         (*self).codex_home()
     }
@@ -79,6 +92,10 @@ impl<T: RolloutConfigView + ?Sized> RolloutConfigView for &T {
 }
 
 impl<T: RolloutConfigView + ?Sized> RolloutConfigView for Arc<T> {
+    fn rollout_compression(&self) -> Option<NonZeroUsize> {
+        self.as_ref().rollout_compression()
+    }
+
     fn codex_home(&self) -> &Path {
         self.as_ref().codex_home()
     }
