@@ -572,6 +572,7 @@ zip = { version = "9.0.0", default-features = false, features = [
     "xz",
     "zstd",
 ] }
+zeekstd = "0.6.2"
 zstd = "0.13"
 
 wiremock = "0.6"

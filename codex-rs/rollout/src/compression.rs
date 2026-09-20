@@ -1416,6 +1416,12 @@ mod reader {
                     )),
                     "zstd",
                 ),
+                source @ RolloutReader::Framed(_) => (
+                    RolloutLineReaderInner::Blocking(Some(
+                        io::BufReader::new(source.into_read()?).lines(),
+                    )),
+                    "zstd",
+                ),
             })
         })
         .await

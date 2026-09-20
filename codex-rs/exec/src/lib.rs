@@ -1829,10 +1829,16 @@ async fn parse_latest_turn_context_cwd(path: &Path) -> Option<PathBuf> {
     let path = path.to_path_buf();
     let (stop, keep_running) = tokio::sync::oneshot::channel::<()>();
     let result = tokio::task::spawn_blocking(move || {
-        let reader =
-            codex_rollout::open_rollout_seekable_reader(&path, || stop.is_closed()).ok()?;
-        let mut scanner = codex_rollout::ReverseJsonlScanner::new(reader).ok()?;
+        let mut scanner = codex_rollout::RolloutReverseScanner::open_with_end_cancellable(
+            &path,
+            None,
+            || stop.is_closed(),
+        )
+        .ok()?;
         while let Some(outcome) = scanner.scan_next_rollout_line().ok()? {
+            if stop.is_closed() {
+                return None;
+            }
             if let codex_rollout::ScanOutcome::Parsed(RolloutLine {
                 item: RolloutItem::TurnContext(item),
                 ..
