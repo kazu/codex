@@ -105,6 +105,37 @@ async fn naming_empty_paginated_thread_propagates_rollout_persistence_failure() 
             .and_then(|metadata| metadata.name),
         None
     );
+async fn local_store_forwards_compression_to_new_recorder() -> Result<(), Box<dyn std::error::Error>>
+{
+    let home = TempDir::new()?;
+    let rollout_config = codex_rollout::RolloutConfig {
+        codex_home: home.path().to_path_buf(),
+        sqlite: test_config(home.path()).sqlite,
+        cwd: home.path().to_path_buf(),
+        model_provider_id: "test-provider".to_string(),
+        generate_memories: true,
+        rollout_compression: std::num::NonZeroUsize::new(/*n*/ 2),
+    };
+    let config = LocalThreadStoreConfig::from_config(&rollout_config);
+    let store = LocalThreadStore::new(config, /*state_db*/ None);
+    let thread_id = ThreadId::new();
+    let mut params = create_thread_params(thread_id);
+    params.metadata.cwd = Some(home.path().to_path_buf());
+    store.create_thread(params).await?;
+    let path = store.live_rollout_path(thread_id).await?;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![user_message_item("compressed")],
+        })
+        .await?;
+    store
+        .persist_thread(thread_id, PersistContext::Standard)
+        .await?;
+    store.shutdown_thread(thread_id).await?;
+    assert!(!path.exists());
+    assert!(path.with_extension("seek.zst").exists());
+    Ok(())
 }
 
 #[tokio::test]

@@ -992,6 +992,8 @@ pub struct Config {
 
     /// Memories subsystem settings.
     pub memories: MemoriesConfig,
+    /// Frame size for new compressed rollouts; None selects plain JSONL.
+    pub rollout_compression: Option<std::num::NonZeroUsize>,
 
     /// Directory containing all Codex state (defaults to `~/.codex` but can be
     /// overridden by the `CODEX_HOME` environment variable).
@@ -3659,6 +3661,10 @@ impl Config {
             memories.version = Some(MemoryVersion::V2);
         }
         let memories_config: MemoriesConfig = memories.into();
+        let rollout_compression = cfg.rollout_compression.then(|| {
+            cfg.rollout_records_per_frame
+                .unwrap_or(std::num::NonZeroUsize::new(/*n*/ 255).expect("255 is nonzero"))
+        });
         let memories_root = codex_home.join(memories_config.version.directory_name());
 
         let profiles_are_active = effective_permission_selection.profiles_are_active(
@@ -4589,6 +4595,7 @@ impl Config {
                 })
                 .transpose()?,
             memories: memories_config,
+            rollout_compression,
             agent_interrupt_message_enabled,
             codex_home,
             sqlite,
