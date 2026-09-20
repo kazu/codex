@@ -7699,6 +7699,17 @@
       "description": "Review model override used by the `/review` feature.",
       "type": "string"
     },
+    "rollout_compression": {
+      "default": false,
+      "description": "Compress newly created rollouts. Disabled by default.",
+      "type": "boolean"
+    },
+    "rollout_records_per_frame": {
+      "description": "Records per compressed frame. Defaults to 255; must be positive.",
+      "format": "uint",
+      "minimum": 1.0,
+      "type": "integer"
+    },
     "sandbox_mode": {
       "allOf": [
         {
