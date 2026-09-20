@@ -637,6 +637,7 @@ sqlite = true
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     let rollout_config = codex_rollout::RolloutConfig {
+        rollout_compression: None,
         codex_home: codex_home.path().to_path_buf(),
         sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         cwd: codex_home.path().to_path_buf(),
@@ -2165,6 +2166,7 @@ async fn thread_list_sort_recency_at_uses_state_db_order_with_provider_filter() 
         .mark_backfill_complete(/*last_watermark*/ None)
         .await?;
     let rollout_config = codex_rollout::RolloutConfig {
+        rollout_compression: None,
         codex_home: codex_home.path().to_path_buf(),
         sqlite: codex_state::SqliteConfig::new_for_testing(codex_home.path().abs()),
         cwd: codex_home.path().to_path_buf(),
