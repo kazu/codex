@@ -108,7 +108,7 @@ pub use seekable_reader::open_rollout_seekable_reader;
 pub use seekable_reader::read_rollout_prefix;
 pub use seekable_reader::rollout_contains_prefix;
 
-/// Materializes a compressed rollout as plain JSONL before another rollout references it.
+/// Materializes a compressed or pending rollout as plain JSONL before another rollout references it.
 pub async fn materialize_rollout_for_reference(
     path: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
