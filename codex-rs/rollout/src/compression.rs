@@ -1075,9 +1075,11 @@ mod reader {
                         tokio::io::BufReader::new(tokio::fs::File::from_std(file)).lines(),
                     )
                 }
-                source @ RolloutReader::Compressed(_) => RolloutLineReaderInner::Blocking(Some(
-                    io::BufReader::new(source.into_read()?).lines(),
-                )),
+                source @ (RolloutReader::Compressed(_) | RolloutReader::Framed(_)) => {
+                    RolloutLineReaderInner::Blocking(Some(
+                        io::BufReader::new(source.into_read()?).lines(),
+                    ))
+                }
             })
         })
         .await

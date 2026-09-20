@@ -1,7 +1,4 @@
-//! Reads rollout bytes and positions independently of their plain or compressed representation.
-//!
-//! Offsets always address the original JSONL bytes. Readers retain an open file, or an anonymous
-//! decoded snapshot, so a concurrent compression cannot invalidate an in-progress scan.
+//! Selects retained rollout representations for sequential reads and frozen-prefix bounds.
 
 use std::fs::File;
 use std::io;
@@ -24,11 +21,12 @@ pub(crate) fn get_rollout_paths(path: &Path) -> io::Result<[PathBuf; 4]> {
 pub(crate) enum RolloutReader {
     Plain(File),
     Compressed(File),
+    Framed(File),
     Pending(File),
 }
 
 impl RolloutReader {
-    fn open(path: &Path) -> io::Result<Self> {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
         for attempt in 0..4 {
             match Self::open_once(path) {
                 Ok((reader, _)) => return Ok(reader),
@@ -48,9 +46,12 @@ impl RolloutReader {
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
             Err(err) => return Err(err),
         }
-        for compressed_path in [legacy_path, archive_path] {
+        for (compressed_path, wrap) in [
+            (legacy_path, Self::Compressed as fn(File) -> Self),
+            (archive_path, Self::Framed as fn(File) -> Self),
+        ] {
             match File::open(&compressed_path) {
-                Ok(file) => return Ok((Self::Compressed(file), compressed_path)),
+                Ok(file) => return Ok((wrap(file), compressed_path)),
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
             }
@@ -62,14 +63,19 @@ impl RolloutReader {
 
     pub(crate) fn file(&self) -> &File {
         match self {
-            Self::Plain(file) | Self::Compressed(file) | Self::Pending(file) => file,
+            Self::Plain(file)
+            | Self::Compressed(file)
+            | Self::Framed(file)
+            | Self::Pending(file) => file,
         }
     }
 
     pub(crate) fn into_read(self) -> io::Result<Box<dyn Read + Send>> {
         match self {
             Self::Plain(file) | Self::Pending(file) => Ok(Box::new(file)),
-            Self::Compressed(file) => Ok(Box::new(zstd::stream::read::Decoder::new(file)?)),
+            Self::Compressed(file) | Self::Framed(file) => {
+                Ok(Box::new(zstd::stream::read::Decoder::new(file)?))
+            }
         }
     }
 }
@@ -92,28 +98,10 @@ pub fn read_rollout_prefix(path: &Path, max_bytes: usize) -> io::Result<Option<V
     Ok(Some(bytes))
 }
 
-/// Opens the original JSONL bytes for blocking offset reads without changing the rollout on disk.
-///
-/// Compressed files are decoded and pending bodies copied into an anonymous temporary file,
-/// keeping memory use bounded and preserving read-only access to the Codex home. Plain files retain
-/// their existing seek fast path.
-pub fn open_rollout_seekable_reader(path: &Path) -> io::Result<File> {
-    match RolloutReader::open(path)? {
-        RolloutReader::Plain(file) => Ok(file),
-        source @ (RolloutReader::Compressed(_) | RolloutReader::Pending(_)) => {
-            let mut decoded = tempfile::tempfile()?;
-            io::copy(&mut source.into_read()?, &mut decoded)?;
-            decoded.rewind()?;
-            Ok(decoded)
-        }
-    }
-}
-
 /// Checks a frozen prefix's byte bound using a blocking read of the logical JSONL representation.
 ///
-/// A known first-frame size is a lower bound even for concatenated zstd frames. New compressed
-/// rollouts include that size, so ordinary lineage validation only reads the header. Older frames
-/// without a size, and prefixes extending beyond the first frame, are decoded up to the bound.
+/// Framed rollouts provide their decoded length in the index. Legacy zstd uses a known first-frame
+/// size as a lower bound, or decodes only up to the requested bound when needed.
 pub fn rollout_contains_prefix(path: &Path, end_byte_offset: u64) -> io::Result<bool> {
     match RolloutReader::open(path)? {
         RolloutReader::Plain(file) => Ok(end_byte_offset <= file.metadata()?.len()),
@@ -122,6 +110,10 @@ pub fn rollout_contains_prefix(path: &Path, end_byte_offset: u64) -> io::Result<
                 .metadata()?
                 .len()
                 .saturating_sub(file.stream_position()?)),
+        RolloutReader::Framed(mut file) => Ok(end_byte_offset
+            <= zeekstd::SeekTable::from_seekable(&mut file)
+                .map_err(io::Error::other)?
+                .size_decomp()),
         RolloutReader::Compressed(mut file) => {
             // A zstd frame header occupies at most 18 bytes.
             let mut header = [0; 18];

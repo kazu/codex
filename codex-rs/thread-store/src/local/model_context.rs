@@ -7,8 +7,8 @@ use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::ModelContextScan;
 use codex_rollout::ModelContextScanProgress;
-use codex_rollout::ReverseJsonlScanner;
 use codex_rollout::RolloutItem;
+use codex_rollout::RolloutReverseScanner;
 use codex_rollout::ScanOutcome;
 
 use super::LocalThreadStore;
@@ -32,8 +32,8 @@ mod tests;
 /// bounded cutoff is available, the scan continues to the beginning and returns the complete
 /// replay it already accumulated.
 ///
-/// Compressed segments are decoded before applying their original JSONL offsets. Legacy rollouts
-/// keep the existing full-history path.
+/// Stored prefix positions constrain record retrieval. Legacy rollouts keep the existing
+/// full-history path.
 pub(super) async fn load_latest_model_context(
     store: &LocalThreadStore,
     params: LoadThreadHistoryParams,
@@ -105,11 +105,11 @@ pub(super) async fn load_for_fork(
         let source_lineage = lineage.clone();
         session_meta.meta.multi_agent_version = tokio::task::spawn_blocking(move || {
             for segment in source_lineage.segments().iter().rev() {
-                let file =
-                    codex_rollout::open_rollout_seekable_reader(segment.rollout_path.as_path())?;
                 let mut scanner = match segment.end.map(|end| end.end_byte_offset) {
-                    Some(end_byte_offset) => ReverseJsonlScanner::new_at(file, end_byte_offset)?,
-                    None => ReverseJsonlScanner::new(file)?,
+                    Some(end) => {
+                        RolloutReverseScanner::open_at(segment.rollout_path.as_path(), end)?
+                    }
+                    None => RolloutReverseScanner::open(segment.rollout_path.as_path())?,
                 };
                 while let Some(outcome) = scanner.scan_next_rollout_line()? {
                     let ScanOutcome::Parsed(line) = outcome else {
@@ -170,10 +170,9 @@ fn scan_model_context_from_lineage_blocking(
 ) -> io::Result<Vec<RolloutItem>> {
     let mut scan = ModelContextScan::default();
     'segments: for segment in lineage.segments().iter().rev() {
-        let file = codex_rollout::open_rollout_seekable_reader(segment.rollout_path.as_path())?;
         let mut scanner = match segment.end.map(|end| end.end_byte_offset) {
-            Some(end_byte_offset) => ReverseJsonlScanner::new_at(file, end_byte_offset)?,
-            None => ReverseJsonlScanner::new(file)?,
+            Some(end) => RolloutReverseScanner::open_at(segment.rollout_path.as_path(), end)?,
+            None => RolloutReverseScanner::open(segment.rollout_path.as_path())?,
         };
         while let Some(outcome) = scanner.scan_next_rollout_line()? {
             let ScanOutcome::Parsed(line) = outcome else {
