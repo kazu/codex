@@ -51,6 +51,7 @@ async fn timeline_pages_mix_items_and_resolve_the_opening_realtime_session() -> 
         codex_state::StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
     let store = LocalThreadStore::new(
         LocalThreadStoreConfig {
+            rollout_compression: None,
             codex_home: codex_home.path().to_path_buf(),
             sqlite,
             default_model_provider_id: "mock_provider".to_string(),

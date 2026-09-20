@@ -21,6 +21,7 @@ pub(super) async fn create_thread(
             message: "local thread store requires a cwd".to_string(),
         })?;
     let config = RolloutConfig {
+        rollout_compression: store.config.rollout_compression,
         codex_home: store.config.codex_home.clone(),
         sqlite: store.config.sqlite.clone(),
         cwd,

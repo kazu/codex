@@ -117,6 +117,7 @@ async fn split_homes_support_backfill_listing_and_paginated_history() {
     let thread_id = ThreadId::new();
     let sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
     let rollout_config = RolloutConfig {
+        rollout_compression: None,
         codex_home: codex_home.clone(),
         sqlite: sqlite.clone(),
         cwd: codex_home.clone(),
