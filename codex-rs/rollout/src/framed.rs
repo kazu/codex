@@ -24,6 +24,10 @@ pub(crate) struct FramedWriter {
 }
 
 impl FramedWriter {
+    pub(crate) fn sync_data(&mut self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+
     pub(crate) fn open(path: &Path, records_per_frame: NonZeroUsize) -> io::Result<Self> {
         let archive = path.with_extension("seek.zst");
         let (file, records_per_frame, pending_records) =

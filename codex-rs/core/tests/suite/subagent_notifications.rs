@@ -3564,6 +3564,7 @@ async fn failed_spawn_edge_leaves_no_child_history(fork_context: bool) -> Result
     // Keep history independent of topology; SQLite metadata can repair missing edges.
     let store = Arc::new(LocalThreadStore::new(
         LocalThreadStoreConfig {
+            rollout_compression: None,
             codex_home: home.path().to_path_buf(),
             sqlite: codex_state::SqliteConfig::new_for_testing(home.path().try_into()?),
             default_model_provider_id: "openai".to_string(),

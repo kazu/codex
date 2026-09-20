@@ -49,6 +49,7 @@ async fn local_store(codex_home: &Path) -> Result<LocalThreadStore> {
         codex_state::StateRuntime::init(sqlite.clone(), "mock_provider".to_string()).await?;
     Ok(LocalThreadStore::new(
         LocalThreadStoreConfig {
+            rollout_compression: None,
             codex_home: codex_home.to_path_buf(),
             sqlite,
             default_model_provider_id: "mock_provider".to_string(),

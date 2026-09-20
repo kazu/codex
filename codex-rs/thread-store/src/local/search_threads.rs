@@ -96,6 +96,7 @@ pub(super) async fn search_threads_observed(
         db = store.state_db() => db,
     };
     let rollout_config = RolloutConfig {
+        rollout_compression: store.config.rollout_compression,
         codex_home: store.config.codex_home.clone(),
         sqlite: store.config.sqlite.clone(),
         cwd: store.config.codex_home.clone(),
