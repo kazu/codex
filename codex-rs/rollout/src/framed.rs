@@ -64,7 +64,7 @@ impl FramedWriter {
     }
 
     /// The caller supplies one serialized record including its newline.
-    /// Failed writes may leave partial data; compressed append recovery is deferred.
+    /// Failed writes may leave partial data; recovery must be explicitly requested.
     pub(crate) fn append(&mut self, line: &[u8]) -> io::Result<()> {
         if let Some(count) = &mut self.pending_records {
             self.file.write_all(line)?;
@@ -72,7 +72,6 @@ impl FramedWriter {
             return Ok(());
         }
 
-        // TODO: Add compressed-append failure handling here before retrying writes.
         seekzstdsep::append_records(
             &mut self.file,
             line,
@@ -81,7 +80,14 @@ impl FramedWriter {
             seekzstdsep::CompressOptions::default().level,
             Some(self.records_per_frame.get()),
         )
-        .map_err(io::Error::other)
+        .map_err(|error| {
+            io::Error::other(error.context(format!(
+                "compressed rollout append failed; stop all writers, then run \
+                 `codex debug rollout-recovery <ARCHIVE> --records-per-frame {}`. Archive: {}",
+                self.records_per_frame,
+                self.path.with_extension("seek.zst").display(),
+            )))
+        })
     }
 
     /// Publishes the first archive once N records are available; later calls do nothing.
@@ -102,33 +108,58 @@ impl FramedWriter {
             .try_into()
             .map_err(io::Error::other)?;
 
-        let parent = self
-            .path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let mut output = tempfile::NamedTempFile::new_in(parent)?;
-        seekzstdsep::convert_to_seekable_zst_reader_with_opts(
+        self.file = write_archive(
+            &self.path.with_extension("seek.zst"),
             &mut self.file,
-            &mut output,
-            size.max(32 * 1024),
-            /*is_same_separator_cnt*/ true,
-            b"\n",
-            /*limit_multiplier*/ Some(1),
-            Some(seekzstdsep::CompressOptions {
-                max_of_separator: Some(self.records_per_frame.get()),
-                ..Default::default()
-            }),
-        )
-        .map_err(io::Error::other)?;
-
-        self.file = output
-            .persist(self.path.with_extension("seek.zst"))
-            .map_err(|error| error.error)?;
+            size,
+            self.records_per_frame,
+        )?;
         self.pending_records = None;
         std::fs::remove_file(get_pending_path(&self.path)?)?;
         Ok(())
     }
+}
+
+/// Rebuilds a seekable archive after all writers have been stopped. Takes no lock.
+/// Decode or compression errors stop recovery without replacing the source.
+/// This does not recover lost records or salvage a partially decoded prefix.
+pub fn recovery(path: &Path, records_per_frame: NonZeroUsize) -> io::Result<()> {
+    let bytes = zstd::stream::decode_all(File::open(path)?)?;
+    if !bytes.ends_with(b"\n") {
+        return Err(io::Error::other(
+            "recovery requires complete newline-terminated records",
+        ));
+    }
+
+    write_archive(path, bytes.as_slice(), bytes.len(), records_per_frame)?;
+    Ok(())
+}
+
+fn write_archive(
+    path: &Path,
+    input: impl Read,
+    size: usize,
+    records_per_frame: NonZeroUsize,
+) -> io::Result<File> {
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut output = tempfile::NamedTempFile::new_in(parent)?;
+    seekzstdsep::convert_to_seekable_zst_reader_with_opts(
+        input,
+        &mut output,
+        size.max(32 * 1024),
+        /*is_same_separator_cnt*/ true,
+        b"\n",
+        /*limit_multiplier*/ Some(1),
+        Some(seekzstdsep::CompressOptions {
+            max_of_separator: Some(records_per_frame.get()),
+            ..Default::default()
+        }),
+    )
+    .map_err(io::Error::other)?;
+    output.persist(path).map_err(|error| error.error)
 }
 
 fn write_start(writer: &mut impl Write, start: u64) -> io::Result<()> {
