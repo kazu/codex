@@ -985,6 +985,8 @@ impl RolloutRecorder {
 
                 RolloutWriterState {
                     writer: None,
+                    rollout_compression: config.rollout_compression(),
+                    writer_lock: writer_lock.clone(),
                     deferred_creation: true,
                     pending_items: Vec::new(),
                     meta: Some(session_meta),
@@ -998,7 +1000,9 @@ impl RolloutRecorder {
                 let (path, file, ordinal_state) =
                     open_rollout_for_append(path.as_path(), writer_lock.clone()).await?;
                 RolloutWriterState {
-                    writer: Some(JsonlWriter { file }),
+                    writer: Some(JsonlWriter::Plain(file)),
+                    rollout_compression: None,
+                    writer_lock: writer_lock.clone(),
                     deferred_creation: false,
                     pending_items: Vec::new(),
                     meta: None,
@@ -1016,16 +1020,15 @@ impl RolloutRecorder {
         // perform *blocking* I/O on the caller's thread.
         let (tx, rx) = mpsc::channel::<RolloutCmd>(256);
         // Spawn a Tokio task that owns the file handle and performs async
-        // writes. Using `tokio::fs::File` keeps everything on the async I/O
-        // driver instead of blocking the runtime.
+        // writes. Plain files use Tokio I/O; framed operations move their retained
+        // file into bounded blocking tasks.
         let writer_task = Arc::new(RolloutWriterTask::new(writer_lock));
         let writer_task_for_spawn = Arc::clone(&writer_task);
         let rollout_path_for_spawn = rollout_path.clone();
         let handle = tokio::task::spawn(async move {
             let result = rollout_writer(state, rx).await;
             if let Err(err) = result {
-                // This is the terminal background-task failure path. Normal I/O failures stay inside
-                // `rollout_writer`, are reported through command acks, and leave items buffered for retry.
+                // Remember terminal failures for future recorder calls.
                 error!(
                     "rollout writer task failed for {}: {err}; error_kind={:?}; raw_os_error={:?}",
                     rollout_path_for_spawn.display(),
@@ -1077,8 +1080,8 @@ impl RolloutRecorder {
 
     /// Materialize the rollout file and persist all buffered items.
     ///
-    /// This is idempotent. If materialization fails, the recorder keeps all pending items in memory
-    /// and a later `persist()` or `flush()` can retry opening and writing the rollout file.
+    /// Repeated calls write only queued items. Opening failures can be retried by a later call.
+    /// Compressed write failures stop the writer as described by [`Self::flush`].
     pub async fn persist(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -1098,8 +1101,9 @@ impl RolloutRecorder {
 
     /// Flush all queued writes and wait until they are committed by the writer task.
     ///
-    /// If the first writer attempt fails, the writer drops and reopens the file handle before
-    /// retrying. This returns an error only when that retry also fails or the writer task is gone.
+    /// Plain-file failures reopen the handle and retry once. Uncertain compressed write failures
+    /// stop the task and return an error. Initial archive publication failures leave accepted
+    /// records available for a later publication attempt without resending them.
     pub async fn flush(&self) -> std::io::Result<()> {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -1205,7 +1209,8 @@ impl RolloutRecorder {
 
     /// Drain pending items before stopping the writer task.
     ///
-    /// If draining fails, the writer stays alive so callers can continue retrying flush/shutdown.
+    /// Plain-file and initial publication failures leave the writer alive for retry.
+    /// Uncertain compressed write failures stop the writer and return an error.
     pub async fn shutdown(&self) -> std::io::Result<()> {
         let (tx_done, rx_done) = oneshot::channel();
         match self.tx.send(RolloutCmd::Shutdown { ack: tx_done }).await {
@@ -1811,10 +1816,12 @@ fn refresh_rollout_modified_time(file: &File) -> std::io::Result<()> {
 /// Mutable state owned by the background rollout writer.
 ///
 /// Items are first appended to `pending_items`; persist/flush/shutdown remove each item from that
-/// queue only after it is written successfully. I/O failures drop the file handle but keep the
-/// unwritten suffix so the next barrier can reopen the file and retry.
+/// queue only after it is written successfully. Plain-file I/O failures retain the unwritten
+/// suffix for retry. Uncertain compressed writes stop the task; promotion can retry after drain.
 struct RolloutWriterState {
     writer: Option<JsonlWriter>,
+    rollout_compression: Option<std::num::NonZeroUsize>,
+    writer_lock: Option<Arc<crate::WriterLockGuard>>,
     /// True until a newly created rollout is first materialized.
     deferred_creation: bool,
     pending_items: Vec<RolloutItem>,
@@ -1835,7 +1842,7 @@ impl RolloutWriterState {
             return;
         }
         if let Err(err) = self.flush().await {
-            self.enter_recovery_mode(&err);
+            self.record_error(&err);
         }
     }
 
@@ -1858,13 +1865,23 @@ impl RolloutWriterState {
     }
 
     async fn write_pending_with_recovery(&mut self, operation: &str) -> std::io::Result<()> {
+        if self.rollout_compression.is_some() {
+            let result = self.write_pending_once().await;
+            match &result {
+                Ok(()) => self.last_logged_error = None,
+                Err(err) => self.record_error(err),
+            }
+            return result;
+        }
+
         match self.write_pending_once().await {
             Ok(()) => {
                 self.last_logged_error = None;
                 Ok(())
             }
             Err(first_err) => {
-                self.enter_recovery_mode(&first_err);
+                self.record_error(&first_err);
+                self.writer = None;
                 warn!("failed to {operation} rollout writer; reopening and retrying: {first_err}");
                 match self.write_pending_once().await {
                     Ok(()) => {
@@ -1872,7 +1889,8 @@ impl RolloutWriterState {
                         Ok(())
                     }
                     Err(second_err) => {
-                        self.enter_recovery_mode(&second_err);
+                        self.record_error(&second_err);
+                        self.writer = None;
                         warn!(
                             "retrying rollout writer {operation} failed; first error: \
                              {first_err}; final error: {second_err}"
@@ -1888,11 +1906,11 @@ impl RolloutWriterState {
         self.writer.is_none() && self.deferred_creation
     }
 
-    fn enter_recovery_mode(&mut self, err: &IoError) {
+    fn record_error(&mut self, err: &IoError) {
         let message = err.to_string();
         if self.last_logged_error.as_ref() != Some(&message) {
             error!(
-                "rollout writer failed for {}; buffered rollout items will be retried: {err}; \
+                "rollout writer failed for {}: {err}; \
                  error_kind={:?}; raw_os_error={:?}",
                 self.rollout_path.display(),
                 err.kind(),
@@ -1900,7 +1918,6 @@ impl RolloutWriterState {
             );
         }
         self.last_logged_error = Some(message);
-        self.writer = None;
     }
 
     async fn ensure_writer_open(&mut self) -> std::io::Result<()> {
@@ -1908,9 +1925,18 @@ impl RolloutWriterState {
             return Ok(());
         }
 
-        let file = open_log_file(self.rollout_path.as_path())?;
-        self.writer = Some(JsonlWriter {
-            file: tokio::fs::File::from_std(file),
+        self.writer = Some(match self.rollout_compression {
+            Some(frame_size) => JsonlWriter::Framed(
+                crate::async_framed::AsyncFramedWriter::open(
+                    self.rollout_path.clone(),
+                    frame_size,
+                    self.writer_lock.clone(),
+                )
+                .await?,
+            ),
+            None => JsonlWriter::Plain(tokio::fs::File::from_std(open_log_file(
+                &self.rollout_path,
+            )?)),
         });
         self.deferred_creation = false;
         Ok(())
@@ -1938,7 +1964,7 @@ impl RolloutWriterState {
         self.write_pending_items_once().await?;
 
         if let Some(writer) = self.writer.as_mut() {
-            writer.file.flush().await?;
+            writer.flush().await?;
         }
         Ok(())
     }
@@ -1952,7 +1978,7 @@ impl RolloutWriterState {
         let mut write_result = Ok(());
         for item in &self.pending_items {
             match self.ordinal_state.current() {
-                Ok(ordinal) => match writer.write_rollout_item(item, ordinal).await {
+                Ok(ordinal) => match writer.append(item, ordinal).await {
                     Ok(()) => self.ordinal_state.advance(),
                     Err(err) => {
                         write_result = Err(err);
@@ -2014,6 +2040,19 @@ async fn rollout_writer(
                 }
             },
         }
+
+        if state.rollout_compression.is_some()
+            && !state.deferred_creation
+            && (state.meta.is_some()
+                || !state.pending_items.is_empty()
+                || state
+                    .writer
+                    .as_ref()
+                    .is_some_and(|writer| !writer.is_available()))
+            && let Some(error) = state.last_logged_error.take()
+        {
+            return Err(IoError::other(error));
+        }
     }
 
     Ok(())
@@ -2042,7 +2081,7 @@ async fn write_session_meta(
     let rollout_item = RolloutItem::SessionMeta(Box::new(session_meta_line));
     if let Some(writer) = writer.as_mut() {
         let ordinal = ordinal_state.current()?;
-        writer.write_rollout_item(&rollout_item, ordinal).await?;
+        writer.append(&rollout_item, ordinal).await?;
         ordinal_state.advance();
     }
     Ok(())
@@ -2060,8 +2099,8 @@ pub async fn append_rollout_item_to_path(
     let (_rollout_path, file, ordinal_state) =
         open_rollout_for_append(rollout_path, /*writer_lock*/ None).await?;
     let ordinal = ordinal_state.current()?;
-    let mut writer = JsonlWriter { file };
-    writer.write_rollout_item(item, ordinal).await
+    let mut writer = JsonlWriter::Plain(file);
+    writer.append(item, ordinal).await
 }
 
 async fn open_rollout_for_append(
@@ -2105,8 +2144,9 @@ fn ensure_rollout_is_newline_terminated(file: &mut File) -> std::io::Result<()> 
     Ok(())
 }
 
-struct JsonlWriter {
-    file: tokio::fs::File,
+enum JsonlWriter {
+    Plain(tokio::fs::File),
+    Framed(crate::async_framed::AsyncFramedWriter),
 }
 
 #[derive(serde::Serialize)]
@@ -2119,7 +2159,14 @@ struct RolloutLineRef<'a> {
 }
 
 impl JsonlWriter {
-    async fn write_rollout_item(
+    fn is_available(&self) -> bool {
+        match self {
+            Self::Plain(_) => true,
+            Self::Framed(writer) => writer.is_available(),
+        }
+    }
+
+    async fn append(
         &mut self,
         rollout_item: &RolloutItem,
         ordinal: Option<u64>,
@@ -2136,14 +2183,23 @@ impl JsonlWriter {
             ordinal,
             item: rollout_item,
         };
-        self.write_line(&line).await
-    }
-    async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
-        let mut json = serde_json::to_string(item)?;
+        let mut json = serde_json::to_string(&line)?;
         json.push('\n');
-        self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
-        Ok(())
+        match self {
+            Self::Plain(file) => {
+                file.write_all(json.as_bytes()).await?;
+                // Report write errors before the caller advances ordinals or drains pending items.
+                file.flush().await
+            }
+            Self::Framed(writer) => writer.append(json).await,
+        }
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(file) => file.flush().await,
+            Self::Framed(writer) => writer.promote().await,
+        }
     }
 }
 

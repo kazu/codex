@@ -234,6 +234,83 @@ async fn load_config_normalizes_relative_cwd_override() -> std::io::Result<()> {
 }
 
 #[tokio::test]
+async fn rollout_compression_config_reaches_new_recorder() -> anyhow::Result<()> {
+    use codex_rollout::RolloutConfigView;
+    use codex_rollout::RolloutRecorder;
+    use codex_rollout::RolloutRecorderParams;
+
+    for (source, frame_size) in [
+        ("", None),
+        (
+            "rollout_compression = false\nrollout_records_per_frame = 3",
+            None,
+        ),
+        ("rollout_compression = true", Some(255)),
+        (
+            "rollout_compression = true\nrollout_records_per_frame = 1",
+            Some(1),
+        ),
+    ] {
+        let home = tempdir()?;
+        let config = Config::load_from_base_config_with_overrides(
+            toml::from_str(source)?,
+            ConfigOverrides {
+                cwd: Some(home.path().to_path_buf()),
+                ..Default::default()
+            },
+            home.abs(),
+        )
+        .await?;
+        assert_eq!(
+            config
+                .rollout_compression()
+                .map(std::num::NonZeroUsize::get),
+            frame_size
+        );
+        let recorder = RolloutRecorder::new(
+            &config,
+            RolloutRecorderParams::new(
+                codex_protocol::ThreadId::new(),
+                /*forked_from_id*/ None,
+                /*parent_thread_id*/ None,
+                codex_protocol::protocol::SessionSource::Exec,
+                /*thread_source*/ None,
+                "test".to_string(),
+                codex_protocol::models::BaseInstructions::default(),
+                Vec::new(),
+            ),
+        )
+        .await?;
+        recorder.persist().await?;
+        recorder.shutdown().await?;
+        let path = recorder.rollout_path();
+        assert_eq!(path.exists(), frame_size.is_none());
+        assert_eq!(
+            path.with_extension("seek.zst").exists(),
+            frame_size == Some(1)
+        );
+        if frame_size == Some(255) {
+            let archive = path.with_extension("seek.zst");
+            let pending = archive.with_file_name(format!(
+                ".pendings.{}",
+                archive.file_name().unwrap().to_str().unwrap()
+            ));
+            let bytes = std::fs::read(pending)?;
+            assert_eq!(&bytes[..8], &0u64.to_le_bytes());
+            let value: serde_json::Value = serde_json::from_slice(&bytes[8..])?;
+            assert_eq!(value["type"], "session_meta");
+        }
+    }
+    for invalid in ["0", "-1", "1.5", "\"3\""] {
+        assert!(
+            toml::from_str::<ConfigToml>(&format!("rollout_records_per_frame = {invalid}"))
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_applies_optional_mcp_startup_grace() -> std::io::Result<()> {
     let codex_home = tempdir()?;
     let config_toml: ConfigToml = toml::from_str("mcp_optional_startup_grace_ms = 2500")

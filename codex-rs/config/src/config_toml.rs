@@ -492,6 +492,12 @@ pub struct ConfigToml {
     /// Memories subsystem settings.
     pub memories: Option<MemoriesToml>,
 
+    /// Compress newly created rollouts. Disabled by default.
+    #[serde(default)]
+    pub rollout_compression: bool,
+    /// Records per compressed frame. Defaults to 255; must be positive.
+    pub rollout_records_per_frame: Option<std::num::NonZeroUsize>,
+
     /// User-level skill config entries keyed by SKILL.md path.
     pub skills: Option<SkillsConfig>,
 
