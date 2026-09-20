@@ -1823,8 +1823,7 @@ async fn latest_thread_cwd(thread: &AppServerThread) -> PathBuf {
 async fn parse_latest_turn_context_cwd(path: &Path) -> Option<PathBuf> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let reader = codex_rollout::open_rollout_seekable_reader(&path).ok()?;
-        let mut scanner = codex_rollout::ReverseJsonlScanner::new(reader).ok()?;
+        let mut scanner = codex_rollout::RolloutReverseScanner::open(&path).ok()?;
         while let Some(outcome) = scanner.scan_next_rollout_line().ok()? {
             if let codex_rollout::ScanOutcome::Parsed(RolloutLine {
                 item: RolloutItem::TurnContext(item),
