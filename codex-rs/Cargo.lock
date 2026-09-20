@@ -4489,6 +4489,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeekstd",
  "zstd",
 ]
 

@@ -1,6 +1,3 @@
-use std::io::Read;
-use std::io::Seek;
-use std::io::SeekFrom;
 use std::path::Path;
 
 use chrono::DateTime;
@@ -91,63 +88,26 @@ async fn read_projection_steps(
 ) -> ThreadStoreResult<(Vec<RolloutProjectionStep>, u64)> {
     let path = rollout_path.to_path_buf();
     let span = tracing::Span::current();
-    tokio::task::spawn_blocking(move || {
+    let bytes = tokio::task::spawn_blocking(move || {
         let _entered = span.enter();
-        read_projection_steps_sync(
-            &path,
-            start_offset,
-            expected_ordinal,
-            thread_id,
-            subagent_history_start_ordinal,
-        )
+        codex_rollout::read_rollout_records_from(&path, start_offset)
     })
     .await
     .map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to join rollout projection read: {err}"),
-    })?
-}
-
-/// Read and project the complete durable prefix in one blocking task.
-fn read_projection_steps_sync(
-    rollout_path: &Path,
-    start_offset: u64,
-    expected_ordinal: u64,
-    thread_id: ThreadId,
-    subagent_history_start_ordinal: Option<u64>,
-) -> ThreadStoreResult<(Vec<RolloutProjectionStep>, u64)> {
-    let mut file = match codex_rollout::open_rollout_seekable_reader(rollout_path) {
-        Ok(file) => file,
+    })?;
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound && start_offset == 0 => {
             return Ok((Vec::new(), 0));
         }
         Err(err) => return Err(thread_store_io_error(err)),
     };
-    let file_end_offset = file.metadata().map_err(thread_store_io_error)?.len();
-    let byte_count =
-        file_end_offset
-            .checked_sub(start_offset)
-            .ok_or_else(|| ThreadStoreError::Internal {
-                message: "durable rollout shrank before projection".to_string(),
-            })?;
-    let byte_count = usize::try_from(byte_count).map_err(|_| ThreadStoreError::Internal {
-        message: "durable rollout append exceeds addressable memory".to_string(),
-    })?;
-    let mut bytes = vec![0; byte_count];
-    file.seek(SeekFrom::Start(start_offset))
-        .map_err(thread_store_io_error)?;
-    file.read_exact(bytes.as_mut_slice())
-        .map_err(thread_store_io_error)?;
-    // Only project the newline-terminated prefix; leave a trailing partial record for the next
-    // pass.
-    let complete_byte_count = bytes
-        .iter()
-        .rposition(|byte| *byte == b'\n')
-        .map_or(0, |index| index + 1);
     let mut projections = Vec::new();
     let mut next_ordinal = expected_ordinal;
     let mut next_offset = start_offset;
     let mut line_start_offset = start_offset;
-    for line_bytes in bytes[..complete_byte_count].split_inclusive(|byte| *byte == b'\n') {
+    for line_bytes in bytes.split_inclusive(|byte| *byte == b'\n') {
         let line_end_offset = line_start_offset
             .checked_add(u64::try_from(line_bytes.len()).map_err(|_| {
                 ThreadStoreError::Internal {

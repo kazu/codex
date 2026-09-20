@@ -1394,7 +1394,7 @@ mod reader {
                     ),
                     "plain",
                 ),
-                source @ RolloutReader::Compressed(_) => (
+                source @ (RolloutReader::Compressed(_) | RolloutReader::Framed(_)) => (
                     RolloutLineReaderInner::Blocking(Some(
                         io::BufReader::new(source.into_read()?).lines(),
                     )),
