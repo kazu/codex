@@ -166,13 +166,13 @@ fn write_start(writer: &mut impl Write, start: u64) -> io::Result<()> {
     writer.write_all(&start.to_le_bytes())
 }
 
-fn read_start(reader: &mut impl Read) -> io::Result<u64> {
+pub(crate) fn read_start(reader: &mut impl Read) -> io::Result<u64> {
     let mut header = [0; 8];
     reader.read_exact(&mut header)?;
     Ok(u64::from_le_bytes(header))
 }
 
-fn get_pending_path(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn get_pending_path(path: &Path) -> io::Result<PathBuf> {
     let archive = path.with_extension("seek.zst");
     let filename = archive.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "rollout path must name a file")

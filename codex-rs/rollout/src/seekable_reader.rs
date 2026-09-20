@@ -10,27 +10,30 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::plain_rollout_path;
 
-enum RolloutReader {
+pub(crate) fn get_rollout_paths(path: &Path) -> io::Result<[PathBuf; 4]> {
+    let plain = plain_rollout_path(path);
+    let legacy = crate::compression::compressed_rollout_path(&plain);
+    let archive = plain.with_extension("seek.zst");
+    let pending = crate::framed::get_pending_path(&plain)?;
+    Ok([plain, legacy, archive, pending])
+}
+
+pub(crate) enum RolloutReader {
     Plain(File),
     Compressed(File),
+    Pending(File),
 }
 
 impl RolloutReader {
     fn open(path: &Path) -> io::Result<Self> {
-        let plain_path = plain_rollout_path(path);
-        let compressed_path = plain_path.with_extension("jsonl.zst");
         for attempt in 0..4 {
-            match File::open(&plain_path) {
-                Ok(file) => return Ok(Self::Plain(file)),
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
-            }
-            match File::open(&compressed_path) {
-                Ok(file) => return Ok(Self::Compressed(file)),
+            match Self::open_once(path) {
+                Ok((reader, _)) => return Ok(reader),
                 Err(err) if err.kind() == io::ErrorKind::NotFound && attempt < 3 => {
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -38,6 +41,38 @@ impl RolloutReader {
             }
         }
         unreachable!("the final open attempt returns its error")
+    }
+
+    pub(crate) fn open_once(path: &Path) -> io::Result<(Self, PathBuf)> {
+        let [plain_path, legacy_path, archive_path, pending_path] = get_rollout_paths(path)?;
+        match File::open(&plain_path) {
+            Ok(file) => return Ok((Self::Plain(file), plain_path)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        for compressed_path in [legacy_path, archive_path] {
+            match File::open(&compressed_path) {
+                Ok(file) => return Ok((Self::Compressed(file), compressed_path)),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        }
+        let mut file = File::open(&pending_path)?;
+        crate::framed::read_start(&mut file)?;
+        Ok((Self::Pending(file), pending_path))
+    }
+
+    pub(crate) fn file(&self) -> &File {
+        match self {
+            Self::Plain(file) | Self::Compressed(file) | Self::Pending(file) => file,
+        }
+    }
+
+    pub(crate) fn into_read(self) -> io::Result<Box<dyn Read + Send>> {
+        match self {
+            Self::Plain(file) | Self::Pending(file) => Ok(Box::new(file)),
+            Self::Compressed(file) => Ok(Box::new(zstd::stream::read::Decoder::new(file)?)),
+        }
     }
 }
 
@@ -50,16 +85,10 @@ pub fn read_rollout_prefix(path: &Path, max_bytes: usize) -> io::Result<Option<V
         return Ok(None);
     }
     let source = RolloutReader::open(path)?;
-    let file = match &source {
-        RolloutReader::Plain(file) | RolloutReader::Compressed(file) => file,
-    };
-    if !file.metadata()?.is_file() {
+    if !source.file().metadata()?.is_file() {
         return Ok(None);
     }
-    let reader: Box<dyn Read> = match source {
-        RolloutReader::Plain(file) => Box::new(file),
-        RolloutReader::Compressed(file) => Box::new(zstd::stream::read::Decoder::new(file)?),
-    };
+    let reader = source.into_read()?;
     let mut bytes = Vec::new();
     reader.take(max_bytes as u64).read_to_end(&mut bytes)?;
     Ok(Some(bytes))
@@ -67,8 +96,9 @@ pub fn read_rollout_prefix(path: &Path, max_bytes: usize) -> io::Result<Option<V
 
 /// Opens the original JSONL bytes for blocking offset reads without changing the rollout on disk.
 ///
-/// Compressed files are decoded into an anonymous temporary file, keeping memory use bounded and
-/// preserving read-only access to the Codex home. Plain files retain their existing seek fast path.
+/// Compressed files are decoded and pending bodies copied into an anonymous temporary file,
+/// keeping memory use bounded and preserving read-only access to the Codex home. Plain files retain
+/// their existing seek fast path.
 /// `is_cancelled` must observe the lifetime of the calling task. Cancellation returns an error,
 /// never EOF, so callers cannot mistake a partial read for a complete history.
 pub fn open_rollout_seekable_reader(
@@ -80,6 +110,16 @@ pub fn open_rollout_seekable_reader(
     }
     let file = match RolloutReader::open(path)? {
         RolloutReader::Plain(file) => file,
+        RolloutReader::Pending(file) => {
+            let mut decoded = tempfile::tempfile()?;
+            let mut reader = CancellableReader {
+                inner: file,
+                is_cancelled: &is_cancelled,
+            };
+            io::copy(&mut reader, &mut decoded)?;
+            decoded.rewind()?;
+            decoded
+        }
         RolloutReader::Compressed(file) => {
             let mut decoded = tempfile::tempfile()?;
             // Empty and skippable frames can consume input without producing decoded bytes.
@@ -149,6 +189,11 @@ pub fn rollout_contains_prefix(
     }
     match RolloutReader::open(path)? {
         RolloutReader::Plain(file) => Ok(end_byte_offset <= file.metadata()?.len()),
+        RolloutReader::Pending(mut file) => Ok(end_byte_offset
+            <= file
+                .metadata()?
+                .len()
+                .saturating_sub(file.stream_position()?)),
         RolloutReader::Compressed(file) => {
             let mut file = CancellableReader {
                 inner: file,
