@@ -26,6 +26,7 @@ codex-state = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path = { workspace = true }
 regex = { workspace = true }
+seekzstdsep = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -50,4 +51,5 @@ zstd = { workspace = true }
 
 [dev-dependencies]
 codex-utils-absolute-path = { workspace = true }
+libc = { workspace = true }
 pretty_assertions = { workspace = true }
