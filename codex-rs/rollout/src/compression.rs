@@ -22,6 +22,7 @@ use error_metrics::FailureMetric;
 pub(crate) use path_metadata::existing_rollout_with_metadata_sync;
 use read_metrics::ReadFailureSource;
 use read_metrics::ReadMetrics;
+use crate::seekable_reader::RolloutReader;
 
 const COMPRESSED_SUFFIX: &str = ".zst";
 const MAX_NOT_FOUND_RETRIES: usize = 3;
@@ -52,7 +53,7 @@ pub fn spawn_rollout_compression_worker(codex_home: PathBuf, trigger: RolloutCom
     worker::spawn(codex_home, trigger)
 }
 
-/// Returns the modified time for the existing plain or compressed rollout file.
+/// Returns the modified time of the authoritative rollout representation.
 pub(crate) async fn file_modified_time(path: &Path) -> io::Result<Option<time::OffsetDateTime>> {
     Ok(path::existing_rollout_with_metadata(path)
         .await
@@ -60,7 +61,7 @@ pub(crate) async fn file_modified_time(path: &Path) -> io::Result<Option<time::O
         .map(time::OffsetDateTime::from))
 }
 
-/// Opens a rollout line reader that transparently handles plain `.jsonl` and `.jsonl.zst` files.
+/// Opens logical JSONL lines from plain, legacy zstd, framed archive, or pending storage.
 ///
 /// If the requested path disappears during a representation transition, this briefly retries
 /// resolution so callers do not need to know which representation is on disk.
@@ -91,12 +92,11 @@ pub async fn open_rollout_line_reader(path: &Path) -> io::Result<RolloutLineRead
 }
 
 /// Returns the compressed `.jsonl.zst` path for a rollout path.
-#[cfg(test)]
 pub(crate) fn compressed_rollout_path(path: &Path) -> PathBuf {
     path::compressed_rollout_path(path)
 }
 
-/// Materializes a compressed rollout back to plain `.jsonl` for async append paths.
+/// Materializes a compressed or pending rollout as plain `.jsonl` for async append paths.
 pub(crate) async fn materialize_rollout_for_append(
     path: &Path,
     writer_lock: Option<std::sync::Arc<crate::WriterLockGuard>>,
@@ -111,18 +111,25 @@ pub(crate) async fn materialize_rollout_for_append(
     .inspect_err(|err| FailureMetric::Materialize.record("task_join", err))?
 }
 
-/// Materializes a compressed rollout back to plain `.jsonl` for blocking append paths.
+/// Materializes a compressed or pending rollout as plain `.jsonl` for blocking append paths.
 pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result<PathBuf> {
     let plain_path = plain_rollout_path(path);
     if plain_path.exists() {
         metrics::materialize("plain_exists");
         return Ok(plain_path);
     }
-    let compressed_path = path::compressed_rollout_path(plain_path.as_path());
-    if !compressed_path.exists() {
-        metrics::materialize("missing");
-        return Ok(plain_path);
-    }
+    let (input, compressed_path) = match RolloutReader::open_once(&plain_path) {
+        Ok((RolloutReader::Plain(_), _)) => return Ok(plain_path),
+        Ok(source) => source,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            metrics::materialize("missing");
+            return Ok(plain_path);
+        }
+        Err(err) => {
+            metrics::materialize("failed");
+            return Err(err);
+        }
+    };
 
     let started_at = Instant::now();
     let mut stage = "prepare_directory";
@@ -130,8 +137,8 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         if let Some(parent) = plain_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        stage = "open_source";
-        let input = File::open(compressed_path.as_path())?;
+        stage = "read_metadata";
+        let metadata_source = input.file().try_clone()?;
         stage = "create_temp";
         // Restoring mtime makes this file look stale before publication. Older
         // workers delete *.tmp without coordinating with materialization.
@@ -150,25 +157,30 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
             )?;
         {
             stage = "decode_and_write";
-            let mut decoder = zstd::stream::read::Decoder::new(&input)?;
+            let mut decoder = input.into_read()?;
             io::copy(&mut decoder, &mut output)?;
         }
         stage = "flush";
         output.flush()?;
         stage = "set_metadata";
-        access_metadata::copy(&input, output.as_file())?;
+        access_metadata::copy(&metadata_source, output.as_file())?;
         stage = "verify";
         File::open(output.path())?;
         stage = "sync";
         output.as_file().sync_all()?;
         stage = "publish";
         persist_temp_file_noclobber(output, plain_path.as_path())?;
-        drop(input);
+        drop(metadata_source);
         stage = "remove_source";
-        match std::fs::remove_file(compressed_path.as_path()) {
-            Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
+        let pending = (compressed_path == plain_path.with_extension("seek.zst"))
+            .then(|| crate::framed::get_pending_path(&plain_path))
+            .transpose()?;
+        for source in std::iter::once(compressed_path).chain(pending) {
+            match std::fs::remove_file(source) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
         }
         Ok(())
     })();
@@ -198,7 +210,7 @@ fn persist_temp_file_noclobber(
     }
 }
 
-/// Returns the plain `.jsonl` path for a plain or compressed rollout path.
+/// Returns the logical `.jsonl` path for a plain, compressed, or pending rollout path.
 pub fn plain_rollout_path(path: &Path) -> PathBuf {
     path::plain_rollout_path(path)
 }
@@ -1289,8 +1301,7 @@ mod metrics {
     }
 }
 
-/// Returns the existing rollout path, preferring the plain `.jsonl` file over
-/// its `.jsonl.zst` compressed sibling.
+/// Returns the existing representation, preferring plain, legacy zstd, archive, then pending.
 pub async fn existing_rollout_path(path: &Path) -> Option<PathBuf> {
     path::existing_rollout_path(path).await
 }
@@ -1319,6 +1330,10 @@ mod path {
         let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
             return path.to_path_buf();
         };
+        if let Some(stem) = file_name.strip_suffix(".seek.zst") {
+            let stem = stem.strip_prefix(".pendings.").unwrap_or(stem);
+            return path.with_file_name(format!("{stem}.jsonl"));
+        }
         let Some(plain_file_name) = file_name.strip_suffix(COMPRESSED_SUFFIX) else {
             return path.to_path_buf();
         };
@@ -1341,15 +1356,18 @@ mod path {
             .map(|(path, _)| path)
     }
 
-    /// Resolves the plain rollout before its compressed sibling and retains the lookup metadata.
+    /// Resolves plain, legacy zstd, archive, then pending storage and retains the lookup metadata.
     ///
     /// Returning the metadata lets callers inspect the selected file without a second stat.
     pub(super) async fn existing_rollout_with_metadata(path: &Path) -> Option<(PathBuf, Metadata)> {
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || super::existing_rollout_with_metadata_sync(&path))
-            .await
-            .ok()
-            .flatten()
+        for candidate in crate::seekable_reader::get_rollout_paths(path).ok()? {
+            if let Ok(metadata) = tokio::fs::metadata(&candidate).await
+                && metadata.is_file()
+            {
+                return Some((candidate, metadata));
+            }
+        }
+        None
     }
 }
 
@@ -1367,44 +1385,44 @@ mod file_name {
 }
 
 mod reader {
-    use std::fs::File;
     use std::io;
     use std::io::BufRead;
-    use std::io::Read;
     use std::path::Path;
 
     use super::ReadFailureSource;
     use super::ReadMetrics;
     use super::RolloutLineReaderInner;
-    use super::path;
+    use crate::seekable_reader::RolloutReader;
     use tokio::io::AsyncBufReadExt;
 
     pub(super) async fn open_once(
         path: &Path,
         metrics: &mut ReadMetrics,
     ) -> io::Result<RolloutLineReaderInner> {
-        let path = path::existing_rollout_path(path)
-            .await
-            .unwrap_or_else(|| path.to_path_buf());
-        if path::is_compressed_rollout_path(path.as_path()) {
-            metrics.format = "zstd";
-            let reader = tokio::task::spawn_blocking(move || {
-                let input = File::open(path.as_path())?;
-                let decoder = super::read_diagnostics::DiagnosticDecoder::new(input)?;
-                Ok::<_, io::Error>(
-                    io::BufReader::new(Box::new(decoder) as Box<dyn Read + Send>).lines(),
-                )
+        let path = path.to_owned();
+        let (inner, format) = tokio::task::spawn_blocking(move || {
+            let (source, _) = RolloutReader::open_once(&path)?;
+            Ok::<_, io::Error>(match source {
+                RolloutReader::Plain(file) | RolloutReader::Pending(file) => (
+                    RolloutLineReaderInner::Plain(
+                        tokio::io::BufReader::new(tokio::fs::File::from_std(file)).lines(),
+                    ),
+                    "plain",
+                ),
+                RolloutReader::Compressed(file) => (
+                    RolloutLineReaderInner::Blocking(Some(
+                        io::BufReader::new(super::read_diagnostics::DiagnosticDecoder::new(file)?)
+                            .lines(),
+                    )),
+                    "zstd",
+                ),
             })
-            .await
-            .map_err(io::Error::other)
-            .inspect_err(|err| metrics.failed("open", ReadFailureSource::TaskJoin, err))??;
-            return Ok(RolloutLineReaderInner::Blocking(Some(reader)));
-        }
-        metrics.format = "plain";
-        let file = tokio::fs::File::open(path).await?;
-        Ok(RolloutLineReaderInner::Plain(
-            tokio::io::BufReader::new(file).lines(),
-        ))
+        })
+        .await
+        .map_err(io::Error::other)
+        .inspect_err(|err| metrics.failed("open", ReadFailureSource::TaskJoin, err))??;
+        metrics.format = format;
+        Ok(inner)
     }
 }
 
