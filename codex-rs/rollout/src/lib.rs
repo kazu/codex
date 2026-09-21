@@ -23,6 +23,7 @@ pub(crate) mod recorder;
 mod reverse_jsonl_scanner;
 mod rollout_file_name;
 mod rollout_reference_index;
+mod rollout_source;
 pub(crate) mod search;
 mod seekable_reader;
 pub(crate) mod session_index;
@@ -104,13 +105,23 @@ pub use compression::plain_rollout_path;
 pub use compression::spawn_rollout_compression_worker;
 pub use record_reader::RolloutReverseScanner;
 pub use record_reader::read_rollout_records_from;
+pub use rollout_source::framed_rollout_paths;
+pub use rollout_source::logical_path_of_framed;
+pub use rollout_source::stored_rollout_path;
+pub use seekable_reader::open_rollout_seekable_reader;
 pub use seekable_reader::read_rollout_prefix;
 pub use seekable_reader::rollout_contains_prefix;
 
-/// Materializes a compressed or pending rollout as plain JSONL before another rollout references it.
+/// Materializes a compressed rollout as plain JSONL before another rollout references it.
+///
+/// A framed archive or pending file is returned as is: it stays compressed and is read through
+/// the rollout readers, so binaries without framed support cannot read the referenced history.
 pub async fn materialize_rollout_for_reference(
     path: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
+    if let Some(path) = rollout_source::existing_framed_path(path).await {
+        return Ok(path);
+    }
     compression::materialize_rollout_for_append(path, /*writer_lock*/ None).await
 }
 pub use config::Config;

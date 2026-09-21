@@ -1,6 +1,7 @@
 mod archive_thread;
 mod create_thread;
 mod delete_thread;
+mod framed_moves;
 mod helpers;
 mod list_threads;
 mod live_writer;
@@ -30,6 +31,10 @@ mod compression_writer_tests;
 #[cfg(test)]
 #[path = "daybreak_metadata_tests.rs"]
 mod daybreak_metadata_tests;
+#[cfg(test)]
+mod framed_lifecycle_tests;
+#[cfg(test)]
+mod framed_test_support;
 #[cfg(test)]
 #[path = "pending_thread_metadata_tests.rs"]
 mod pending_thread_metadata_tests;

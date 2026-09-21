@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -53,7 +52,7 @@ impl RolloutOrdinalState {
 }
 
 pub(crate) fn ordinal_state_for_rollout(
-    file: &mut File,
+    file: &mut (impl io::Read + Seek),
     path: &Path,
 ) -> io::Result<RolloutOrdinalState> {
     let Some((history_mode, subagent_history_start_ordinal)) = read_history_metadata(file, path)?
@@ -100,7 +99,7 @@ pub(crate) fn ordinal_state_for_rollout(
 }
 
 fn read_history_metadata(
-    file: &mut File,
+    file: &mut (impl io::Read + Seek),
     path: &Path,
 ) -> io::Result<Option<(ThreadHistoryMode, Option<u64>)>> {
     file.seek(SeekFrom::Start(0))?;

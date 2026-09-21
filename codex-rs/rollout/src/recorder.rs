@@ -959,11 +959,16 @@ impl RolloutRecorder {
                 }
             }
             RolloutRecorderParams::Resume { path } => {
-                let (path, file, ordinal_state) =
-                    open_rollout_for_append(path.as_path(), writer_lock.clone()).await?;
+                let (path, writer, rollout_compression, ordinal_state) =
+                    open_rollout_writer_for_append(
+                        path.as_path(),
+                        config.rollout_compression(),
+                        writer_lock.clone(),
+                    )
+                    .await?;
                 RolloutWriterState {
-                    writer: Some(JsonlWriter::Plain(file)),
-                    rollout_compression: None,
+                    writer: Some(writer),
+                    rollout_compression,
                     writer_lock: writer_lock.clone(),
                     deferred_creation: false,
                     pending_items: Vec::new(),
@@ -2023,11 +2028,44 @@ pub async fn append_rollout_item_to_path(
     rollout_path: &Path,
     item: &RolloutItem,
 ) -> std::io::Result<()> {
-    let (_rollout_path, file, ordinal_state) =
-        open_rollout_for_append(rollout_path, /*writer_lock*/ None).await?;
+    let (_rollout_path, mut writer, _frame_size, ordinal_state) = open_rollout_writer_for_append(
+        rollout_path,
+        /*frame_size*/ None,
+        /*writer_lock*/ None,
+    )
+    .await?;
     let ordinal = ordinal_state.current()?;
-    let mut writer = JsonlWriter::Plain(file);
     writer.append(item, ordinal).await
+}
+
+/// Opens a rollout for appending in the format it is stored in.
+///
+/// Framed storage is appended in place, with the frame size the writer state must keep; every
+/// other format goes through [`open_rollout_for_append`]. `frame_size` is the configured size a
+/// pending file publishes at.
+async fn open_rollout_writer_for_append(
+    path: &Path,
+    frame_size: Option<std::num::NonZeroUsize>,
+    writer_lock: Option<Arc<crate::WriterLockGuard>>,
+) -> std::io::Result<(
+    PathBuf,
+    JsonlWriter,
+    Option<std::num::NonZeroUsize>,
+    RolloutOrdinalState,
+)> {
+    if let Some((path, writer, frame_size, ordinal_state)) =
+        crate::async_framed::AsyncFramedWriter::open_existing(path, frame_size, writer_lock.clone())
+            .await?
+    {
+        return Ok((
+            path,
+            JsonlWriter::Framed(writer),
+            Some(frame_size),
+            ordinal_state,
+        ));
+    }
+    let (path, file, ordinal_state) = open_rollout_for_append(path, writer_lock).await?;
+    Ok((path, JsonlWriter::Plain(file), None, ordinal_state))
 }
 
 async fn open_rollout_for_append(
@@ -2056,7 +2094,7 @@ async fn open_rollout_for_append(
     Ok((path, tokio::fs::File::from_std(file), ordinal_state))
 }
 
-fn ensure_rollout_is_newline_terminated(file: &mut File) -> std::io::Result<()> {
+pub(crate) fn ensure_rollout_is_newline_terminated(file: &mut File) -> std::io::Result<()> {
     if file.metadata()?.len() == 0 {
         return Ok(());
     }

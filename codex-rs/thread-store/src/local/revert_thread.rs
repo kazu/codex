@@ -134,6 +134,7 @@ pub(super) async fn revert(
         })?;
     if !replaced {
         let _ = tokio::fs::remove_file(replacement_path.as_path()).await;
+        super::framed_moves::remove_framed_files(replacement_path.as_path()).await;
         return Err(ThreadStoreError::Conflict {
             message: format!("thread {thread_id} changed while it was being reverted"),
         });
