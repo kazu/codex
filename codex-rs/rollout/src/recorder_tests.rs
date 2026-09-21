@@ -71,7 +71,7 @@ async fn compressed_recorder_preserves_deferred_creation_and_record_order() -> a
     )
     .await?;
     let path = recorder.rollout_path().to_path_buf();
-    let archive = path.with_extension("seek.zst");
+    let archive = path.with_extension("jsonl.seek.zst");
     let pending = archive.with_file_name(format!(
         ".pendings.{}",
         archive.file_name().unwrap().to_str().unwrap()
@@ -166,7 +166,7 @@ async fn compressed_recorder_retries_promotion_without_resending_records() -> an
         ),
     )
     .await?;
-    let archive = recorder.rollout_path().with_extension("seek.zst");
+    let archive = recorder.rollout_path().with_extension("jsonl.seek.zst");
     recorder
         .record_canonical_items(&[agent_message_item("once")])
         .await?;
@@ -216,7 +216,7 @@ async fn compressed_append_failure_stops_automatic_replay() -> anyhow::Result<()
     )
     .await?;
     recorder.persist().await?;
-    let archive = recorder.rollout_path().with_extension("seek.zst");
+    let archive = recorder.rollout_path().with_extension("jsonl.seek.zst");
     let original = fs::read(&archive)?;
     fs::write(&archive, b"broken seek table")?;
     recorder

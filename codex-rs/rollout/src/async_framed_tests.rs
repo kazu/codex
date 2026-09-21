@@ -44,7 +44,8 @@ async fn join_failure_after_publication_leaves_writer_unavailable() -> anyhow::R
     );
     drop(writer);
     let _guard = coordinator.acquire(thread_id)?;
-    let records = zstd::stream::decode_all(std::fs::File::open(path.with_extension("seek.zst"))?)?;
+    let records =
+        zstd::stream::decode_all(std::fs::File::open(path.with_extension("jsonl.seek.zst"))?)?;
     assert_eq!(records, b"{}\n");
     Ok(())
 }
