@@ -50,7 +50,7 @@ async fn local_store_forwards_compression_to_new_recorder() -> Result<(), Box<dy
         .await?;
     store.shutdown_thread(thread_id).await?;
     assert!(!path.exists());
-    assert!(path.with_extension("seek.zst").exists());
+    assert!(path.with_extension("jsonl.seek.zst").exists());
     Ok(())
 }
 
