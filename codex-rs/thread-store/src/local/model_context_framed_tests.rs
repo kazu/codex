@@ -54,7 +54,7 @@ async fn replays_framed_lineage_like_plain_lineage() {
     // Frames of two records put the frozen root cutoff in the middle of the archive, and the
     // stored byte position must select the same records as in the plain file.
     for path in [&root_path, &child_path] {
-        let archive = path.with_extension("seek.zst");
+        let archive = path.with_extension("jsonl.seek.zst");
         let input = std::fs::File::open(path).expect("open rollout");
         let output = std::fs::File::create(&archive).expect("create archive");
         zstd::stream::copy_encode(input, output, /*level*/ 3).expect("compress rollout");

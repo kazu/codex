@@ -281,11 +281,11 @@ async fn rollout_compression_config_reaches_new_recorder() -> anyhow::Result<()>
         let path = recorder.rollout_path();
         assert_eq!(path.exists(), frame_size.is_none());
         assert_eq!(
-            path.with_extension("seek.zst").exists(),
+            path.with_extension("jsonl.seek.zst").exists(),
             frame_size == Some(1)
         );
         if frame_size == Some(255) {
-            let archive = path.with_extension("seek.zst");
+            let archive = path.with_extension("jsonl.seek.zst");
             let pending = archive.with_file_name(format!(
                 ".pendings.{}",
                 archive.file_name().unwrap().to_str().unwrap()
