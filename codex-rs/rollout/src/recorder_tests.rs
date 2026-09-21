@@ -2189,3 +2189,6 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
     );
     Ok(())
 }
+
+#[path = "recorder_framed_tests.rs"]
+mod framed;

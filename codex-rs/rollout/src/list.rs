@@ -1610,6 +1610,7 @@ pub async fn prefetch_sibling_rollout_paths(
 /// Extract the `YYYY/MM/DD` directory components from a rollout filename.
 pub fn rollout_date_parts(file_name: &OsStr) -> Option<(String, String, String)> {
     let name = file_name.to_string_lossy();
+    let name = crate::framed::strip_pending_prefix(&name);
     let date = name.strip_prefix("rollout-")?.get(..10)?;
     let year = date.get(..4)?.to_string();
     let month = date.get(5..7)?.to_string();
