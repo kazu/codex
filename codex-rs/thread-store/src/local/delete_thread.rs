@@ -277,7 +277,11 @@ fn delete_rollout_file(store: &LocalThreadStore, rollout_path: &Path) -> ThreadS
     let compressed_path = plain_path.with_extension("jsonl.zst");
     let deleted_plain = delete_rollout_path(store, plain_path.as_path())?;
     let deleted_compressed = delete_rollout_path(store, compressed_path.as_path())?;
-    Ok(deleted_plain || deleted_compressed)
+    let mut deleted_framed = false;
+    for framed_path in codex_rollout::framed_rollout_paths(plain_path.as_path()) {
+        deleted_framed |= delete_rollout_path(store, framed_path.as_path())?;
+    }
+    Ok(deleted_plain || deleted_compressed || deleted_framed)
 }
 
 fn delete_rollout_path(store: &LocalThreadStore, rollout_path: &Path) -> ThreadStoreResult<bool> {
@@ -881,3 +885,7 @@ SELECT
         std::fs::write(path, format!("{session_meta}\n")).expect("write session file");
     }
 }
+
+#[cfg(test)]
+#[path = "delete_thread_framed_tests.rs"]
+mod framed_tests;
