@@ -13,8 +13,8 @@ async fn framed_readers_preserve_logical_bytes() -> anyhow::Result<()> {
     for count in [0, 1, 2, 3, 4] {
         let home = tempfile::tempdir()?;
         let path = home.path().join("rollout.jsonl");
-        let archive = path.with_extension("seek.zst");
-        let pending = home.path().join(".pendings.rollout.seek.zst");
+        let archive = path.with_extension("jsonl.seek.zst");
+        let pending = home.path().join(".pendings.rollout.jsonl.seek.zst");
         let mut writer = FramedWriter::open(&path, NonZeroUsize::new(/*n*/ 3).unwrap())?;
         for record in &records[..count] {
             writer.append(record.as_bytes())?;
@@ -64,12 +64,12 @@ async fn framed_readers_preserve_logical_bytes() -> anyhow::Result<()> {
 async fn framed_readers_report_corrupt_authoritative_archive() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let path = home.path().join("rollout.jsonl");
-    let pending = home.path().join(".pendings.rollout.seek.zst");
+    let pending = home.path().join(".pendings.rollout.jsonl.seek.zst");
     fs::write(
         &pending,
         [0u64.to_le_bytes().as_slice(), b"stale\n"].concat(),
     )?;
-    fs::write(path.with_extension("seek.zst"), b"invalid zstd")?;
+    fs::write(path.with_extension("jsonl.seek.zst"), b"invalid zstd")?;
     let result = async {
         let mut reader = crate::open_rollout_line_reader(&path).await?;
         while reader.next_line().await?.is_some() {}
@@ -109,8 +109,8 @@ async fn pending_without_a_complete_header_reads_like_an_empty_plain_rollout() -
     let mut results = Vec::new();
     for (name, bytes) in [
         ("rollout.jsonl", [0; 0].as_slice()),
-        (".pendings.rollout.seek.zst", &[0; 0]),
-        (".pendings.rollout.seek.zst", &[0; 7]),
+        (".pendings.rollout.jsonl.seek.zst", &[0; 0]),
+        (".pendings.rollout.jsonl.seek.zst", &[0; 7]),
     ] {
         let home = tempfile::tempdir()?;
         let path = home.path().join("rollout.jsonl");
@@ -138,8 +138,8 @@ async fn pending_without_a_complete_header_reads_like_an_empty_plain_rollout() -
 async fn framed_metadata_uses_the_same_authoritative_file() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let path = home.path().join("rollout.jsonl");
-    let archive = path.with_extension("seek.zst");
-    let pending = home.path().join(".pendings.rollout.seek.zst");
+    let archive = path.with_extension("jsonl.seek.zst");
+    let pending = home.path().join(".pendings.rollout.jsonl.seek.zst");
     let mut writer =
         crate::framed::FramedWriter::open(&path, std::num::NonZeroUsize::new(/*n*/ 2).unwrap())?;
     for source in [&pending, &archive] {
