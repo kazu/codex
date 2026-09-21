@@ -23,17 +23,38 @@ pub(crate) struct FramedWriter {
     pending_records: Option<usize>,
 }
 
+/// The stored records as [`FramedWriter::open_with_records`] left them after opening.
+pub(crate) enum StoredRecords {
+    Archive(RecordReader),
+    /// The pending file's JSONL bytes, without its start header.
+    Pending(Vec<u8>),
+}
+
 impl FramedWriter {
     pub(crate) fn open(path: &Path, records_per_frame: NonZeroUsize) -> io::Result<Self> {
-        let archive = path.with_extension("seek.zst");
-        let (file, records_per_frame, pending_records) =
+        Ok(Self::open_with_records(path, records_per_frame)?.0)
+    }
+
+    /// Also hands back what opening had to read, so a resume derives its ordinal state without
+    /// opening the storage a second time.
+    pub(crate) fn open_with_records(
+        path: &Path,
+        records_per_frame: NonZeroUsize,
+    ) -> io::Result<(Self, StoredRecords)> {
+        let archive = get_archive_path(path);
+        let (file, records_per_frame, pending_records, records) =
             match OpenOptions::new().read(true).write(true).open(&archive) {
                 Ok(file) => {
                     let reader = RecordReader::from_file(archive, file.try_clone()?, b"\n")
                         .map_err(io::Error::other)?;
                     let records_per_frame = NonZeroUsize::new(reader.records_per_frame())
                         .ok_or_else(|| io::Error::other("empty rollout archive"))?;
-                    (file, records_per_frame, None)
+                    (
+                        file,
+                        records_per_frame,
+                        None,
+                        StoredRecords::Archive(reader),
+                    )
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
                     let mut file = OpenOptions::new()
@@ -41,8 +62,12 @@ impl FramedWriter {
                         .append(true)
                         .create(true)
                         .open(get_pending_path(path)?)?;
-                    if file.metadata()?.len() == 0 {
+                    let len = file.metadata()?.len();
+                    if len == 0 {
                         write_start(&mut file, /*start*/ 0)?;
+                    } else if len > 8 {
+                        // A resumed pending file gets the same tail repair as a plain rollout.
+                        crate::recorder::ensure_rollout_is_newline_terminated(&mut file)?;
                     }
 
                     file.rewind()?;
@@ -50,17 +75,28 @@ impl FramedWriter {
                     let mut bytes = Vec::new();
                     file.read_to_end(&mut bytes)?;
                     let count = bytes.iter().filter(|byte| **byte == b'\n').count();
-                    (file, records_per_frame, Some(count))
+                    (
+                        file,
+                        records_per_frame,
+                        Some(count),
+                        StoredRecords::Pending(bytes),
+                    )
                 }
                 Err(error) => return Err(error),
             };
 
-        Ok(Self {
+        let writer = Self {
             path: path.to_owned(),
             file,
             records_per_frame,
             pending_records,
-        })
+        };
+        Ok((writer, records))
+    }
+
+    /// The archive's frame size once published; until then the size it will publish with.
+    pub(crate) fn records_per_frame(&self) -> NonZeroUsize {
+        self.records_per_frame
     }
 
     /// The caller supplies one serialized record including its newline.
@@ -72,20 +108,24 @@ impl FramedWriter {
             return Ok(());
         }
 
-        seekzstdsep::append_records(
+        // Every frame before the last holds exactly `records_per_frame` records: the archive is
+        // published with that limit and only ever extended here, so the count is trusted and
+        // earlier frames are not decoded on each append.
+        seekzstdsep::append_records_with_opts(
             &mut self.file,
             line,
             b"\n",
             seekzstdsep::OnMissingSeparator::Refuse,
             seekzstdsep::CompressOptions::default().level,
             Some(self.records_per_frame.get()),
+            /*trust_records_per_frame*/ true,
         )
         .map_err(|error| {
             io::Error::other(error.context(format!(
                 "compressed rollout append failed; stop all writers, then run \
                  `codex debug rollout-recovery <ARCHIVE> --records-per-frame {}`. Archive: {}",
                 self.records_per_frame,
-                self.path.with_extension("seek.zst").display(),
+                get_archive_path(&self.path).display(),
             )))
         })
     }
@@ -109,7 +149,7 @@ impl FramedWriter {
             .map_err(io::Error::other)?;
 
         self.file = write_archive(
-            &self.path.with_extension("seek.zst"),
+            &get_archive_path(&self.path),
             &mut self.file,
             size,
             self.records_per_frame,
@@ -172,12 +212,35 @@ pub(crate) fn read_start(reader: &mut impl Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(header))
 }
 
+const ARCHIVE_SUFFIX: &str = ".seek.zst";
+const PENDING_PREFIX: &str = ".pendings.";
+
+/// Returns whether a file name is a framed archive or its pending file.
+pub(crate) fn is_framed_file_name(name: &str) -> bool {
+    name.ends_with(ARCHIVE_SUFFIX)
+}
+
+/// Returns the logical `.jsonl` file name for an archive or pending file name.
+pub(crate) fn get_plain_file_name(name: &str) -> Option<String> {
+    let stem = strip_pending_prefix(name.strip_suffix(ARCHIVE_SUFFIX)?);
+    Some(format!("{stem}.jsonl"))
+}
+
+/// Returns a file name without the pending prefix, so the name starts with `rollout-` again.
+pub(crate) fn strip_pending_prefix(name: &str) -> &str {
+    name.strip_prefix(PENDING_PREFIX).unwrap_or(name)
+}
+
+pub(crate) fn get_archive_path(path: &Path) -> PathBuf {
+    path.with_extension(&ARCHIVE_SUFFIX[1..])
+}
+
 pub(crate) fn get_pending_path(path: &Path) -> io::Result<PathBuf> {
-    let archive = path.with_extension("seek.zst");
+    let archive = get_archive_path(path);
     let filename = archive.file_name().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "rollout path must name a file")
     })?;
-    let mut name = std::ffi::OsString::from(".pendings.");
+    let mut name = std::ffi::OsString::from(PENDING_PREFIX);
     name.push(filename);
     Ok(archive.with_file_name(name))
 }
