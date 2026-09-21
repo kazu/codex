@@ -219,7 +219,7 @@ fn record_suffix_lookup_avoids_decoded_temporary_writes() -> anyhow::Result<()> 
 fn reverse_record_lookup_does_not_decode_unrequested_middle_frame() -> anyhow::Result<()> {
     let home = tempfile::tempdir()?;
     let path = home.path().join("rollout.jsonl");
-    let archive = path.with_extension("seek.zst");
+    let archive = path.with_extension("jsonl.seek.zst");
     let mut writer =
         crate::framed::FramedWriter::open(&path, std::num::NonZeroUsize::new(/*n*/ 1).unwrap())?;
     let records = [

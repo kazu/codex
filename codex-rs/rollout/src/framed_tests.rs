@@ -2,7 +2,7 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 fn archive_records(path: &Path) -> anyhow::Result<(usize, Vec<u8>)> {
-    let mut reader = RecordReader::open(path.with_extension("seek.zst"), b"\n")?;
+    let mut reader = RecordReader::open(path.with_extension("jsonl.seek.zst"), b"\n")?;
     let count = reader.total_records()?;
     let mut bytes = Vec::new();
     reader.records_to(/*from*/ 0, count, &mut bytes)?;
@@ -12,13 +12,13 @@ fn archive_records(path: &Path) -> anyhow::Result<(usize, Vec<u8>)> {
 #[test]
 fn recovery_rebuilds_a_missing_seek_table_without_locking() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path().join("rollout.seek.zst");
+    let path = dir.path().join("rollout.jsonl.seek.zst");
     let records = b"{}\n{\"index\":1}\n{\"index\":2}\n";
     std::fs::write(
         &path,
         zstd::stream::encode_all(records.as_slice(), /*level*/ 0)?,
     )?;
-    let lock = dir.path().join(".lock.rollout.seek.zst");
+    let lock = dir.path().join(".lock.rollout.jsonl.seek.zst");
     std::fs::write(&lock, b"untouched")?;
     recovery(&path, NonZeroUsize::new(/*n*/ 2).unwrap())?;
     assert_eq!(
@@ -32,7 +32,7 @@ fn recovery_rebuilds_a_missing_seek_table_without_locking() -> anyhow::Result<()
 #[test]
 fn recovery_stops_on_decode_error_without_replacing_the_source() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path().join("rollout.seek.zst");
+    let path = dir.path().join("rollout.jsonl.seek.zst");
     let mut broken = zstd::stream::encode_all(b"{}\n{}\n".as_slice(), /*level*/ 0)?;
     broken.pop();
     std::fs::write(&path, &broken)?;
@@ -48,7 +48,7 @@ fn compressed_append_errors_explain_manual_recovery() -> anyhow::Result<()> {
     let mut writer = FramedWriter::open(&path, NonZeroUsize::new(/*n*/ 1).unwrap())?;
     writer.append(b"{}\n")?;
     writer.promote()?;
-    writer.file = File::open(path.with_extension("seek.zst"))?;
+    writer.file = File::open(path.with_extension("jsonl.seek.zst"))?;
     let error = writer.append(b"{}\n").unwrap_err().to_string();
     assert!(error.contains("codex debug rollout-recovery"), "{error}");
     assert!(error.contains("--records-per-frame 1"), "{error}");
@@ -59,7 +59,7 @@ fn compressed_append_errors_explain_manual_recovery() -> anyhow::Result<()> {
 #[test]
 fn recovery_rejects_empty_or_incomplete_records_without_replacement() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
-    let path = dir.path().join("rollout.seek.zst");
+    let path = dir.path().join("rollout.jsonl.seek.zst");
     for records in [b"".as_slice(), b"{}", b"{}\n{"] {
         let original = zstd::stream::encode_all(records, /*level*/ 0)?;
         std::fs::write(&path, &original)?;
@@ -102,7 +102,7 @@ fn appends_directly_after_the_first_archive() -> anyhow::Result<()> {
 fn keeps_pending_records_until_the_first_full_frame() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("rollout.jsonl");
-    let pending = dir.path().join(".pendings.rollout.seek.zst");
+    let pending = dir.path().join(".pendings.rollout.jsonl.seek.zst");
     let mut writer = FramedWriter::open(&path, NonZeroUsize::new(/*n*/ 3).unwrap())?;
     let mut expected = 0_u64.to_le_bytes().to_vec();
     assert_eq!(std::fs::read(&pending)?, expected);
@@ -110,7 +110,7 @@ fn keeps_pending_records_until_the_first_full_frame() -> anyhow::Result<()> {
         writer.append(b"{}\n")?;
         expected.extend_from_slice(b"{}\n");
         writer.promote()?;
-        assert!(!path.with_extension("seek.zst").exists());
+        assert!(!path.with_extension("jsonl.seek.zst").exists());
         assert_eq!(std::fs::read(&pending)?, expected);
         drop(writer);
         writer = FramedWriter::open(&path, NonZeroUsize::new(/*n*/ 3).unwrap())?;
@@ -224,7 +224,7 @@ fn retries_initial_compression_after_a_real_write_error() -> anyhow::Result<()> 
             assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &original), 0);
         }
         assert!(result.is_err());
-        assert!(!path.with_extension("seek.zst").exists());
+        assert!(!path.with_extension("jsonl.seek.zst").exists());
         assert_eq!(std::fs::read(&pending)?, before);
         writer.promote()?;
         assert_eq!(archive_records(&path)?, (2, before[8..].to_vec()));

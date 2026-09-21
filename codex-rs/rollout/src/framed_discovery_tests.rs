@@ -179,8 +179,8 @@ fn logical_path_of_framed_changes_only_framed_names() {
     let paths = [
         "rollout-a.jsonl",
         "rollout-a.jsonl.zst",
-        "rollout-a.seek.zst",
-        ".pendings.rollout-a.seek.zst",
+        "rollout-a.jsonl.seek.zst",
+        ".pendings.rollout-a.jsonl.seek.zst",
     ]
     .map(|name| crate::logical_path_of_framed(&dir.join(name)));
 
