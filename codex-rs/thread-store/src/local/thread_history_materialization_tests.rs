@@ -2383,7 +2383,7 @@ async fn framed_projection_resumes_old_byte_checkpoint_across_rejected_records()
     );
     append_suffix(path.as_path(), &suffix);
     compress_rollout(path.as_path());
-    let archive = path.with_extension("seek.zst");
+    let archive = path.with_extension("jsonl.seek.zst");
     fs::rename(path.with_extension("jsonl.zst"), &archive).expect("name framed fixture");
     codex_rollout::recovery(&archive, std::num::NonZeroUsize::new(/*n*/ 2).unwrap())
         .expect("frame fixture records");
