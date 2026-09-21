@@ -6,8 +6,8 @@ use super::rollout_path_is_resumable;
 fn framed_rollout_is_resumable_through_its_logical_path() {
     let results = [
         "rollout.jsonl",
-        "rollout.seek.zst",
-        ".pendings.rollout.seek.zst",
+        "rollout.jsonl.seek.zst",
+        ".pendings.rollout.jsonl.seek.zst",
     ]
     .map(|name| {
         let home = tempfile::tempdir().expect("temp dir");
@@ -25,7 +25,7 @@ fn rollout_without_records_is_not_resumable_in_either_format() {
     // A crash after creating the file leaves an empty plain file or a header-only pending file.
     let results = [
         ("rollout.jsonl", [0u8; 0].as_slice()),
-        (".pendings.rollout.seek.zst", &[0u8; 8]),
+        (".pendings.rollout.jsonl.seek.zst", &[0u8; 8]),
     ]
     .map(|(name, bytes)| {
         let home = tempfile::tempdir().expect("temp dir");
