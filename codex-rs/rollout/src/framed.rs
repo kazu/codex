@@ -212,7 +212,7 @@ pub(crate) fn read_start(reader: &mut impl Read) -> io::Result<u64> {
     Ok(u64::from_le_bytes(header))
 }
 
-const ARCHIVE_SUFFIX: &str = ".seek.zst";
+const ARCHIVE_SUFFIX: &str = ".jsonl.seek.zst";
 const PENDING_PREFIX: &str = ".pendings.";
 
 /// Returns whether a file name is a framed archive or its pending file.
