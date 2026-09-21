@@ -537,7 +537,8 @@ async fn worker_compresses_archived_fork_chain() -> anyhow::Result<()> {
         (&child_path, original_child),
     ] {
         assert!(!path.exists(), "compression should replace {path:?}");
-        let restored = crate::read_rollout_records_from(path, /*start_offset*/ 0)?;
+        let mut restored = Vec::new();
+        crate::open_rollout_seekable_reader(path)?.read_to_end(&mut restored)?;
         assert_eq!(restored, original);
     }
     Ok(())
@@ -1239,3 +1240,6 @@ async fn worker_compresses_parallel_cold_candidates_without_skipping_other_publi
     assert_eq!(representations, vec![(false, true); paths.len()]);
     Ok(())
 }
+
+#[path = "compression_framed_tests.rs"]
+mod framed;

@@ -108,6 +108,11 @@ async fn archive_thread_with_paths(
             .iter()
             .any(|(source, _)| source == &canonical_rollout_path)
         {
+            super::framed_moves::push_framed_sibling_moves(
+                &mut rollout_moves,
+                canonical_rollout_path.as_path(),
+                archive_folder.as_path(),
+            );
             rollout_moves.push((canonical_rollout_path, destination));
         }
     }
@@ -369,3 +374,7 @@ mod tests {
         assert_eq!(updated.recency_at, metadata.recency_at);
     }
 }
+
+#[cfg(test)]
+#[path = "archive_thread_framed_tests.rs"]
+mod framed_tests;

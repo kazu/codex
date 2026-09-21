@@ -519,10 +519,6 @@ async fn replays_nested_archived_lineage_from_frozen_prefix() {
     );
     // The same frozen lineage must replay from compressed files, without materializing or
     // accidentally including the archived root's records after the inherited cutoff.
-    let lineage = store
-        .resolve_rollout_lineage(child_id)
-        .await
-        .expect("resolve known paths before conversion");
     for path in [&archived_root, &middle_path, &child_path] {
         let input = std::fs::File::open(path).expect("open rollout");
         let output = std::fs::File::create(path.with_extension("jsonl.zst"))
@@ -539,19 +535,6 @@ async fn replays_nested_archived_lineage_from_frozen_prefix() {
         .expect("load compressed lineage model context");
     assert_eq!(
         serde_json::to_value(compressed_context.items).expect("serialize compressed context"),
-        serde_json::to_value(&expected).expect("serialize expected context")
-    );
-    for path in [&archived_root, &middle_path, &child_path] {
-        let archive = path.with_extension("seek.zst");
-        std::fs::rename(path.with_extension("jsonl.zst"), &archive).expect("name framed fixture");
-        codex_rollout::recovery(&archive, std::num::NonZeroUsize::new(/*n*/ 3).unwrap())
-            .expect("frame existing records");
-    }
-    let framed_context = super::scan_model_context_from_lineage(lineage, child_meta)
-        .await
-        .expect("read known framed lineage with old frozen positions");
-    assert_eq!(
-        serde_json::to_value(framed_context).expect("serialize framed context"),
         serde_json::to_value(expected).expect("serialize expected context")
     );
     assert!(
@@ -792,3 +775,6 @@ fn compacted(message: &str, replacement_history: Option<Vec<ResponseItem>>) -> R
         resume_metadata: None,
     }))
 }
+
+#[path = "model_context_framed_tests.rs"]
+mod framed;

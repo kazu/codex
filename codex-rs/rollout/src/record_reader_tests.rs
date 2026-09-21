@@ -67,12 +67,8 @@ fn records_preserve_frozen_record_boundaries_across_formats() -> anyhow::Result<
             }
             _ => unreachable!(),
         }
-        let boundaries = std::iter::once(/*value*/ 0).chain(
-            body.bytes()
-                .enumerate()
-                .filter_map(|(index, byte)| (byte == b'\n').then_some(index + 1)),
-        );
-        for end in boundaries {
+        // Positions inside a record behave like plain byte positions in every format.
+        for end in 0..=body.len() {
             assert_eq!(
                 read_rollout_records_from(&path, end as u64)?,
                 body.as_bytes()[end..]
@@ -95,20 +91,6 @@ fn records_preserve_frozen_record_boundaries_across_formats() -> anyhow::Result<
         }
         assert!(RolloutReverseScanner::open_at(&path, body.len() as u64 + 1).is_err());
         assert!(read_rollout_records_from(&path, body.len() as u64 + 1).is_err());
-        if format == "framed" {
-            for offset in (1..=body.len() + 1)
-                .filter(|offset| *offset > body.len() || body.as_bytes()[offset - 1] != b'\n')
-            {
-                assert!(
-                    RolloutReverseScanner::open_at(&path, offset as u64)
-                        .is_err_and(|error| error.kind() == io::ErrorKind::InvalidInput)
-                );
-                assert!(
-                    read_rollout_records_from(&path, offset as u64)
-                        .is_err_and(|error| error.kind() == io::ErrorKind::InvalidInput)
-                );
-            }
-        }
     }
     Ok(())
 }
