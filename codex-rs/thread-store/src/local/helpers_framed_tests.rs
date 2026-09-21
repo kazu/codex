@@ -22,12 +22,12 @@ fn stored_thread_from_framed_rollout_item_matches_the_plain_item() {
 
     assert!(plain.is_some());
     assert_eq!(
-        stored(format!("rollout-2025-01-03T12-00-00-{uuid}.seek.zst")),
+        stored(format!("rollout-2025-01-03T12-00-00-{uuid}.jsonl.seek.zst")),
         plain
     );
     assert_eq!(
         stored(format!(
-            ".pendings.rollout-2025-01-03T12-00-00-{uuid}.seek.zst"
+            ".pendings.rollout-2025-01-03T12-00-00-{uuid}.jsonl.seek.zst"
         )),
         plain
     );
