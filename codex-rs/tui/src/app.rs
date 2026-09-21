@@ -504,6 +504,7 @@ fn resumable_thread(
 }
 
 fn rollout_path_is_resumable(rollout_path: &Path) -> bool {
+    let rollout_path = codex_rollout::stored_rollout_path(rollout_path);
     std::fs::metadata(rollout_path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
 }
 
@@ -1237,3 +1238,7 @@ impl Drop for App {
 pub(super) mod test_support;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "app/framed_resumable_tests.rs"]
+mod framed_resumable_tests;
