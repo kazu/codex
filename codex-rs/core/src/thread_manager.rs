@@ -2173,8 +2173,13 @@ impl ThreadManagerState {
                             "cannot resume a live Guardian reviewer; use thread/read to inspect it, or resume after its parent is unloaded".to_owned(),
                         ));
                     }
-                    if let Some(requested_rollout_path) = resumed.rollout_path.as_deref()
-                        && thread.rollout_path().as_deref() != Some(requested_rollout_path)
+                    // A listing names a framed rollout by its archive or pending file, while the
+                    // live recorder reports the logical `.jsonl` path.
+                    if let Some(requested_rollout_path) = resumed
+                        .rollout_path
+                        .as_deref()
+                        .map(codex_rollout::logical_path_of_framed)
+                        && thread.rollout_path() != Some(requested_rollout_path)
                     {
                         return Err(CodexErr::InvalidRequest(format!(
                             "thread {} is already running with a different rollout path",

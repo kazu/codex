@@ -190,6 +190,10 @@ pub(super) async fn shutdown_thread(
         }
     }
     sync_materialized_rollout_path(store, thread_id, rollout_path.as_path()).await?;
+    // A framed rollout keeps its logical `.jsonl` path; stat the file that holds it.
+    let rollout_path = codex_rollout::existing_rollout_path(&rollout_path)
+        .await
+        .unwrap_or(rollout_path);
     if let Some(metrics) = codex_otel::global()
         && let Ok(metadata) = tokio::fs::metadata(&rollout_path).await
     {
@@ -383,3 +387,7 @@ async fn durable_write(recorder: &RolloutRecorder, write: RolloutWriteOp) -> Thr
         RolloutWriteOp::Flush => recorder.flush().await.map_err(thread_store_io_error),
     }
 }
+
+#[cfg(test)]
+#[path = "live_writer_framed_tests.rs"]
+mod framed_tests;
