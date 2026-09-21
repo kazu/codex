@@ -1,6 +1,8 @@
 use crate::framed::FramedWriter;
+use crate::ordinal::RolloutOrdinalState;
 use std::io;
 use std::num::NonZeroUsize;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -26,6 +28,38 @@ impl AsyncFramedWriter {
                 writer: Some(writer),
                 writer_lock,
             })
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    /// Opens existing framed storage to append in place, with its frame size and the ordinal
+    /// state for the next record. Returns `None` unless [`crate::existing_rollout_path`]
+    /// resolves to an archive or pending file; plain and legacy zstd rollouts keep their own
+    /// open path. A pending file publishes at `frame_size`; with compression disabled
+    /// (`None`) it keeps receiving records and is never published as an archive.
+    pub(crate) async fn open_existing(
+        path: &Path,
+        frame_size: Option<NonZeroUsize>,
+        writer_lock: Option<Arc<crate::WriterLockGuard>>,
+    ) -> io::Result<Option<(PathBuf, Self, NonZeroUsize, RolloutOrdinalState)>> {
+        if crate::rollout_source::existing_framed_path(path)
+            .await
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let path = crate::plain_rollout_path(path);
+        tokio::task::spawn_blocking(move || {
+            let (writer, records) =
+                FramedWriter::open_with_records(&path, frame_size.unwrap_or(NonZeroUsize::MAX))?;
+            let ordinal_state = crate::rollout_source::ordinal_state_for_framed(&path, records)?;
+            let frame_size = writer.records_per_frame();
+            let writer = Self {
+                writer: Some(writer),
+                writer_lock,
+            };
+            Ok(Some((path, writer, frame_size, ordinal_state)))
         })
         .await
         .map_err(io::Error::other)?

@@ -144,6 +144,11 @@ async fn unarchive_thread_with_index(
             .iter()
             .any(|(source, _)| source == &canonical_archived_path)
         {
+            super::framed_moves::push_framed_sibling_moves(
+                &mut rollout_moves,
+                canonical_archived_path.as_path(),
+                dest_dir.as_path(),
+            );
             rollout_moves.push((canonical_archived_path, destination));
         }
     }
