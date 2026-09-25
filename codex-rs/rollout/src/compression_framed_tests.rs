@@ -39,7 +39,11 @@ async fn worker_leaves_framed_storage_and_still_compresses_plain_rollouts() -> a
         framed_files.push((path, file.clone(), fs::read(&file)?));
     }
 
-    worker::run(home.path().to_path_buf()).await?;
+    worker::run(
+        home.path().to_path_buf(),
+        RolloutCompressionTrigger::Startup,
+    )
+    .await?;
 
     assert!(!plain_path.exists());
     assert!(compressed_rollout_path(&plain_path).exists());

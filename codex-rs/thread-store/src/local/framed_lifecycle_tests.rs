@@ -67,6 +67,8 @@ async fn framed_thread_lives_through_the_store_like_a_plain_thread() {
         let thread_id = ThreadId::new();
         store
             .create_thread(CreateThreadParams {
+                creator_user_id: None,
+                creator_account_id: None,
                 session_id: thread_id.into(),
                 thread_id,
                 extra_config: None,
