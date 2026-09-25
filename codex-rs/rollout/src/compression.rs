@@ -289,8 +289,8 @@ impl RolloutLineReader {
                     *slot = Some(reader);
                     line
                 }
+                RolloutLineReaderInner::Framed(lines) => lines.next_line().await,
             }
-            RolloutLineReaderInner::Framed(lines) => lines.next_line().await,
         }
         .await;
         self.metrics.duration = self.metrics.duration.saturating_add(started_at.elapsed());
