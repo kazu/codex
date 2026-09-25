@@ -21,6 +21,7 @@ fn compacted_record(message: &str) -> String {
             window_id: None,
             compaction_response_id: None,
             latest_token_usage_record: None,
+            resume_metadata: None,
         }),
     };
     format!("{}\n", serde_json::to_string(&line).unwrap())
