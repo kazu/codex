@@ -105,6 +105,9 @@ async fn naming_empty_paginated_thread_propagates_rollout_persistence_failure() 
             .and_then(|metadata| metadata.name),
         None
     );
+}
+
+#[tokio::test]
 async fn local_store_forwards_compression_to_new_recorder() -> Result<(), Box<dyn std::error::Error>>
 {
     let home = TempDir::new()?;
