@@ -107,6 +107,7 @@ async fn framed_thread_lives_through_the_store_like_a_plain_thread() {
                 thread_id,
                 rollout_path: None,
                 history: None,
+                history_revision: None,
                 include_archived: false,
                 metadata: metadata(home.path()),
             })

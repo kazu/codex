@@ -38,6 +38,7 @@ async fn resumed_framed_thread_appends_and_shuts_down_like_a_plain_thread() {
                 thread_id,
                 rollout_path: Some(resume_path),
                 history: None,
+                history_revision: None,
                 include_archived: false,
                 metadata: ThreadPersistenceMetadata {
                     cwd: Some(home.path().to_path_buf()),
