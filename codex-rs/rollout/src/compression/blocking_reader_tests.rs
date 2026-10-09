@@ -3,6 +3,7 @@
 use std::io;
 use std::io::BufRead;
 use std::io::Read;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -95,5 +96,25 @@ async fn cancelling_full_scan_stops_before_the_next_record() -> anyhow::Result<(
     assert!(task.await.unwrap_err().is_cancelled());
     continue_tx.send(())?;
     assert_eq!(finished_rx.await??, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocking_scan_reads_framed_lines_like_plain_lines() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let plain = home.path().join("rollout.jsonl");
+    let records = b"first\r\nsecond\n";
+    std::fs::write(&plain, records)?;
+    let expected =
+        read_rollout_lines(&plain, |lines| lines.collect::<io::Result<Vec<_>>>()).await?;
+
+    let mut writer = crate::framed::FramedWriter::open(&plain, NonZeroUsize::new(2).unwrap())?;
+    writer.append(b"first\r\n")?;
+    writer.append(b"second\n")?;
+    writer.promote()?;
+    std::fs::remove_file(&plain)?;
+
+    let actual = read_rollout_lines(&plain, |lines| lines.collect::<io::Result<Vec<_>>>()).await?;
+    assert_eq!(actual, expected);
     Ok(())
 }
