@@ -199,6 +199,19 @@ pub(crate) struct FramedLines {
 }
 
 impl FramedLines {
+    pub(crate) fn into_blocking_lines(
+        self,
+    ) -> io::Result<impl Iterator<Item = io::Result<String>> + Send> {
+        let records = self
+            .records
+            .ok_or_else(|| io::Error::other("compressed rollout reader is busy"))?;
+        Ok(self.batch.into_iter().chain(records.map(|record| {
+            record
+                .map_err(io::Error::other)
+                .and_then(decode_record_line)
+        })))
+    }
+
     /// Yields what `BufRead::lines` yields for the same bytes.
     pub(crate) async fn next_line(&mut self) -> io::Result<Option<String>> {
         if self.batch.is_empty() {
@@ -209,20 +222,9 @@ impl FramedLines {
             let (batch, records) = tokio::task::spawn_blocking(move || {
                 let mut batch = VecDeque::with_capacity(batch_len);
                 for record in records.by_ref().take(batch_len) {
-                    let line = record.map_err(io::Error::other).and_then(|mut record| {
-                        if record.ends_with(b"\n") {
-                            record.pop();
-                            if record.ends_with(b"\r") {
-                                record.pop();
-                            }
-                        }
-                        String::from_utf8(record).map_err(|_| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "stream did not contain valid UTF-8",
-                            )
-                        })
-                    });
+                    let line = record
+                        .map_err(io::Error::other)
+                        .and_then(decode_record_line);
                     let failed = line.is_err();
                     batch.push_back(line);
                     if failed {
@@ -239,6 +241,21 @@ impl FramedLines {
         }
         self.batch.pop_front().transpose()
     }
+}
+
+fn decode_record_line(mut record: Vec<u8>) -> io::Result<String> {
+    if record.ends_with(b"\n") {
+        record.pop();
+        if record.ends_with(b"\r") {
+            record.pop();
+        }
+    }
+    String::from_utf8(record).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        )
+    })
 }
 
 /// Applies [`crate::ordinal::ordinal_state_for_rollout`] to framed or pending storage.
