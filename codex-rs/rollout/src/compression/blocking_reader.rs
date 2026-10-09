@@ -10,7 +10,6 @@ use std::sync::PoisonError;
 use std::time::Duration;
 use std::time::Instant;
 
-use super::BlockingLineReader;
 use super::ReadFailureSource;
 use super::ReadMetrics;
 use super::RolloutLineReaderInner;
@@ -23,29 +22,31 @@ where
     F: FnOnce(&mut dyn Iterator<Item = io::Result<String>>) -> io::Result<T> + Send + 'static,
 {
     let reader = open_rollout_line_reader(path).await?;
-    let lines: BlockingLineReader = match reader.inner {
+    match reader.inner {
         RolloutLineReaderInner::Plain(lines) => {
             // The fresh reader has no buffered data to preserve when converting the file.
             let file = lines.into_inner().into_inner().into_std().await;
-            io::BufReader::new(Box::new(file) as Box<dyn io::Read + Send>).lines()
+            let lines = io::BufReader::new(Box::new(file) as Box<dyn io::Read + Send>).lines();
+            scan_lines(lines, reader.metrics, read).await
         }
-        RolloutLineReaderInner::Blocking(Some(lines)) => lines,
+        RolloutLineReaderInner::Blocking(Some(lines)) => {
+            scan_lines(lines, reader.metrics, read).await
+        }
         RolloutLineReaderInner::Blocking(None) => {
-            return Err(io::Error::other("compressed rollout reader is busy"));
+            Err(io::Error::other("compressed rollout reader is busy"))
         }
-    };
-    scan_lines(lines, reader.metrics, read).await
+        RolloutLineReaderInner::Framed(lines) => {
+            scan_lines(lines.into_blocking_lines()?, reader.metrics, read).await
+        }
+    }
 }
 
 /// Runs a consumer over measured lines, retaining metrics if the caller drops the future.
-pub(super) async fn scan_lines<T, F>(
-    lines: BlockingLineReader,
-    metrics: ReadMetrics,
-    scan: F,
-) -> io::Result<T>
+pub(super) async fn scan_lines<T, F, I>(lines: I, metrics: ReadMetrics, scan: F) -> io::Result<T>
 where
     T: Send + 'static,
     F: FnOnce(&mut dyn Iterator<Item = io::Result<String>>) -> io::Result<T> + Send + 'static,
+    I: Iterator<Item = io::Result<String>> + Send + 'static,
 {
     // Include the initial queue wait, as the per-line reader does, but exclude consumer work.
     let queued_at = Instant::now();
@@ -79,14 +80,14 @@ where
     result?
 }
 
-struct MeasuredLines<'a> {
-    lines: BlockingLineReader,
+struct MeasuredLines<'a, I> {
+    lines: I,
     metrics: &'a mut ReadMetrics,
     stop: tokio::sync::oneshot::Sender<()>,
     queue_duration: Duration,
 }
 
-impl Iterator for MeasuredLines<'_> {
+impl<I: Iterator<Item = io::Result<String>>> Iterator for MeasuredLines<'_, I> {
     type Item = io::Result<String>;
 
     fn next(&mut self) -> Option<Self::Item> {
