@@ -25,7 +25,7 @@ pub(crate) struct FramedWriter {
 
 /// The stored records as [`FramedWriter::open_with_records`] left them after opening.
 pub(crate) enum StoredRecords {
-    Archive(RecordReader),
+    Archive(Box<RecordReader>),
     /// The pending file's JSONL bytes, without its start header.
     Pending(Vec<u8>),
 }
@@ -53,7 +53,7 @@ impl FramedWriter {
                         file,
                         records_per_frame,
                         None,
-                        StoredRecords::Archive(reader),
+                        StoredRecords::Archive(Box::new(reader)),
                     )
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {

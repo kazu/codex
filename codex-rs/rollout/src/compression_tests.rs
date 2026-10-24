@@ -538,7 +538,7 @@ async fn worker_compresses_archived_fork_chain() -> anyhow::Result<()> {
     ] {
         assert!(!path.exists(), "compression should replace {path:?}");
         let mut restored = Vec::new();
-        crate::open_rollout_seekable_reader(path)?.read_to_end(&mut restored)?;
+        crate::open_rollout_seekable_reader(path, || false)?.read_to_end(&mut restored)?;
         assert_eq!(restored, original);
     }
     Ok(())

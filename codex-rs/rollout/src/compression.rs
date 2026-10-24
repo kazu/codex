@@ -267,7 +267,7 @@ pub struct RolloutLineReader {
 pub(crate) enum RolloutLineReaderInner {
     Plain(tokio::io::Lines<tokio::io::BufReader<tokio::fs::File>>),
     Blocking(Option<BlockingLineReader>),
-    Framed(crate::rollout_source::FramedLines),
+    Framed(Box<crate::rollout_source::FramedLines>),
 }
 
 impl RolloutLineReader {

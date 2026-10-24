@@ -193,7 +193,10 @@ fn prefix_bounds_support_sized_unsized_and_concatenated_frames() -> io::Result<(
         let mut actual = Vec::new();
         open_rollout_seekable_reader(&path, || false)?.read_to_end(&mut actual)?;
         assert_eq!(actual, expected);
-        assert_eq!(crate::read_rollout_records_from(&path, /*start_offset*/ 0)?, expected);
+        assert_eq!(
+            crate::read_rollout_records_from(&path, /*start_offset*/ 0)?,
+            expected
+        );
         assert!(!path.with_extension("").exists());
     }
     Ok(())

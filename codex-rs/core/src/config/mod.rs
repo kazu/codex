@@ -3663,7 +3663,7 @@ impl Config {
         let memories_config: MemoriesConfig = memories.into();
         let rollout_compression = cfg.rollout_compression.then(|| {
             cfg.rollout_records_per_frame
-                .unwrap_or(std::num::NonZeroUsize::new(/*n*/ 255).expect("255 is nonzero"))
+                .unwrap_or(std::num::NonZeroUsize::new(255).unwrap_or(std::num::NonZeroUsize::MIN))
         });
         let memories_root = codex_home.join(memories_config.version.directory_name());
 
