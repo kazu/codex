@@ -100,6 +100,27 @@ fn opening_a_reader_waits_for_an_active_frame_edit() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test]
+fn opened_archive_remains_readable_after_its_path_is_removed() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.jsonl");
+    let mut writer = crate::framed::FramedWriter::open(&path, NonZeroUsize::new(2).unwrap())?;
+    let records = [compacted_record("one"), compacted_record("two")];
+    for record in &records {
+        writer.append(record.as_bytes())?;
+        writer.promote()?;
+    }
+    let archive = crate::framed::get_archive_path(&path);
+    let file = fs::File::open(&archive)?;
+    fs::remove_file(&archive)?;
+    let (mut reader, end) = open_framed_projection_reader(&archive, file, 0, || false)?;
+    let mut actual = Vec::new();
+    reader.read_to_end(&mut actual)?;
+    assert_eq!(actual, records.concat().as_bytes());
+    assert_eq!(end, actual.len() as u64);
+    Ok(())
+}
+
 fn record_message(outcome: ScanOutcome<RolloutLine>) -> String {
     match outcome {
         ScanOutcome::Parsed(RolloutLine {
