@@ -1,5 +1,7 @@
 use std::fs;
 use std::num::NonZeroUsize;
+use std::sync::mpsc;
+use std::time::Duration;
 
 use pretty_assertions::assert_eq;
 
@@ -25,6 +27,67 @@ fn compacted_record(message: &str) -> String {
         })),
     };
     format!("{}\n", serde_json::to_string(&line).unwrap())
+}
+
+#[test]
+fn readers_keep_the_last_frame_when_a_writer_appends() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.jsonl");
+    let mut writer = crate::framed::FramedWriter::open(&path, NonZeroUsize::new(2).unwrap())?;
+    let records: Vec<_> = ["one", "two", "three", "four"]
+        .into_iter()
+        .map(compacted_record)
+        .collect();
+    for record in &records[..3] {
+        writer.append(record.as_bytes())?;
+        writer.promote()?;
+    }
+
+    let (mut forward, endpoint) = open_rollout_projection_reader(&path, 0, || false)?;
+    let mut reverse = RolloutReverseScanner::open(&path)?;
+    writer.append(records[3].as_bytes())?;
+
+    let mut bytes = Vec::new();
+    forward.read_to_end(&mut bytes)?;
+    assert_eq!(bytes, records[..3].concat().as_bytes());
+    assert_eq!(endpoint, bytes.len() as u64);
+    let mut reversed = Vec::new();
+    while let Some(outcome) = reverse.scan_next_rollout_line()? {
+        if let ScanOutcome::Parsed(line) = outcome {
+            reversed.push(line);
+        }
+    }
+    assert_eq!(reversed.len(), 3);
+    assert_eq!(
+        serde_json::to_value(&reversed[0])?,
+        serde_json::from_str::<serde_json::Value>(&records[2])?
+    );
+    Ok(())
+}
+
+#[test]
+fn opening_a_reader_waits_for_an_active_frame_edit() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.jsonl");
+    let mut writer = crate::framed::FramedWriter::open(&path, NonZeroUsize::new(2).unwrap())?;
+    writer.append(compacted_record("one").as_bytes())?;
+    writer.append(compacted_record("two").as_bytes())?;
+    writer.promote()?;
+    let lock = crate::framed::archive_frame_lock(&path, true)?;
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        finished_tx
+            .send(RolloutReverseScanner::open(&path).is_ok())
+            .unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(2))?;
+    assert!(finished_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    drop(lock);
+    assert!(finished_rx.recv_timeout(Duration::from_secs(2))?);
+    reader.join().unwrap();
+    Ok(())
 }
 
 fn record_message(outcome: ScanOutcome<RolloutLine>) -> String {
@@ -68,12 +131,14 @@ fn records_preserve_frozen_record_boundaries_across_formats() -> anyhow::Result<
             }
             _ => unreachable!(),
         }
-        // Positions inside a record behave like plain byte positions in every format.
+        // Reverse scans retain byte positions inside a record. Projection reads start at records.
         for end in 0..=body.len() {
-            assert_eq!(
-                read_rollout_records_from(&path, end as u64)?,
-                body.as_bytes()[end..]
-            );
+            if end == 0 || body.as_bytes()[end - 1] == b'\n' {
+                assert_eq!(
+                    read_rollout_records_from(&path, end as u64)?,
+                    body.as_bytes()[end..]
+                );
+            }
             let mut actual = RolloutReverseScanner::open_at(&path, end as u64)?;
             let mut expected =
                 ReverseJsonlScanner::new(std::io::Cursor::new(&body.as_bytes()[..end]))?;

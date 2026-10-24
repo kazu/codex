@@ -6,6 +6,8 @@
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
@@ -26,8 +28,19 @@ pub(crate) struct FramedWriter {
 /// The stored records as [`FramedWriter::open_with_records`] left them after opening.
 pub(crate) enum StoredRecords {
     Archive(Box<RecordReader>),
-    /// The pending file's JSONL bytes, without its start header.
-    Pending(Vec<u8>),
+    /// The pending file positioned just after its start header.
+    Pending(File),
+}
+
+/// Serializes replacement of the archive's last frame with readers taking a snapshot of it.
+pub(crate) fn archive_frame_lock(path: &Path, exclusive: bool) -> io::Result<File> {
+    let lock = File::open(get_archive_path(path))?;
+    if exclusive {
+        lock.lock()?;
+    } else {
+        lock.lock_shared()?;
+    }
+    Ok(lock)
 }
 
 impl FramedWriter {
@@ -72,14 +85,27 @@ impl FramedWriter {
 
                     file.rewind()?;
                     read_start(&mut file)?;
-                    let mut bytes = Vec::new();
-                    file.read_to_end(&mut bytes)?;
-                    let count = bytes.iter().filter(|byte| **byte == b'\n').count();
+                    let mut count = 0;
+                    {
+                        let mut reader = BufReader::new(&mut file);
+                        loop {
+                            let bytes = reader.fill_buf()?;
+                            if bytes.is_empty() {
+                                break;
+                            }
+                            count += bytes.iter().filter(|byte| **byte == b'\n').count();
+                            let len = bytes.len();
+                            reader.consume(len);
+                        }
+                    }
+                    file.rewind()?;
+                    read_start(&mut file)?;
+                    let pending_reader = file.try_clone()?;
                     (
                         file,
                         records_per_frame,
                         Some(count),
-                        StoredRecords::Pending(bytes),
+                        StoredRecords::Pending(pending_reader),
                     )
                 }
                 Err(error) => return Err(error),
@@ -107,6 +133,8 @@ impl FramedWriter {
             *count += 1;
             return Ok(());
         }
+
+        let _frame_lock = archive_frame_lock(&self.path, true)?;
 
         // Every frame before the last holds exactly `records_per_frame` records: the archive is
         // published with that limit and only ever extended here, so the count is trusted and
