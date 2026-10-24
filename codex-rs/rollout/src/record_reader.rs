@@ -13,9 +13,9 @@ use zeekstd::SeekTable;
 use crate::ReverseJsonlScanner;
 use crate::RolloutLine;
 use crate::ScanOutcome;
-use crate::seekable_reader::CancellableReader;
 use crate::rollout_source::RolloutSource;
 use crate::rollout_source::Shifted;
+use crate::seekable_reader::CancellableReader;
 use crate::seekable_reader::open_plain_or_legacy_file;
 
 /// Reads the newline-terminated suffix after an existing projection's record-boundary byte checkpoint.
@@ -72,13 +72,16 @@ pub fn read_rollout_records_from(path: &Path, start_offset: u64) -> io::Result<V
 
 /// Opens a bounded forward projection stream at a complete-record byte checkpoint.
 ///
-/// The returned endpoint is frozen when the representation is opened. Framed files are decoded
+/// The returned endpoint is captured when the representation is opened. Framed files are decoded
 /// one physical record at a time; other representations retain an open seekable snapshot.
 pub fn open_rollout_projection_reader<'a>(
     path: &Path,
     start_offset: u64,
     is_cancelled: impl Fn() -> bool + 'a,
 ) -> io::Result<(Box<dyn Read + 'a>, u64)> {
+    if is_cancelled() {
+        return Err(io::Error::other("rollout read cancelled"));
+    }
     let file = match RolloutSource::open_framed(path)? {
         Some(RolloutSource::Framed(file)) => {
             let mut source = FramedRecords::open(path, file)?;
@@ -137,7 +140,9 @@ impl Read for FramedForwardReader {
                 .reader
                 .record(self.next)
                 .map_err(io::Error::other)?
-                .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record"))?;
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
+                })?;
             self.next += 1;
             self.position = 0;
         }
