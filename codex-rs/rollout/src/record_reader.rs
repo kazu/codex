@@ -54,25 +54,13 @@ pub fn open_rollout_projection_reader_with_minimum<'a>(
     }
     let file = match RolloutSource::open_framed(path)? {
         Some(RolloutSource::Framed(file)) => {
-            let mut source = FramedRecords::open(path, file)?;
-            let end = source.table.size_decomp();
-            validate_minimum_len(end, minimum_len)?;
-            let (next, skipped) = source.locate(start_offset)?;
-            if skipped != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "rollout checkpoint is inside a record",
-                ));
-            }
-            let total = source.total;
-            let reader = FramedForwardReader {
-                source,
-                next,
-                total,
-                record: Vec::new(),
-                position: 0,
-            };
-            return Ok((Box::new(CancellableReader::new(reader, is_cancelled)), end));
+            return open_framed_projection_reader_with_minimum(
+                path,
+                file,
+                start_offset,
+                minimum_len,
+                is_cancelled,
+            );
         }
         Some(RolloutSource::Pending(file)) => file,
         None => open_plain_or_legacy_file(path, &is_cancelled)?,
@@ -98,6 +86,46 @@ fn validate_minimum_len(actual: u64, minimum: Option<u64>) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+pub(crate) fn open_framed_projection_reader<'a>(
+    path: &Path,
+    file: File,
+    start_offset: u64,
+    is_cancelled: impl Fn() -> bool + 'a,
+) -> io::Result<(Box<dyn Read + 'a>, u64)> {
+    open_framed_projection_reader_with_minimum(path, file, start_offset, None, is_cancelled)
+}
+
+fn open_framed_projection_reader_with_minimum<'a>(
+    path: &Path,
+    file: File,
+    start_offset: u64,
+    minimum_len: Option<u64>,
+    is_cancelled: impl Fn() -> bool + 'a,
+) -> io::Result<(Box<dyn Read + 'a>, u64)> {
+    if is_cancelled() {
+        return Err(io::Error::other("rollout read cancelled"));
+    }
+    let mut source = FramedRecords::open(path, file)?;
+    let end = source.table.size_decomp();
+    validate_minimum_len(end, minimum_len)?;
+    let (next, skipped) = source.locate(start_offset)?;
+    if skipped != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rollout checkpoint is inside a record",
+        ));
+    }
+    let total = source.total;
+    let reader = FramedForwardReader {
+        source,
+        next,
+        total,
+        record: Vec::new(),
+        position: 0,
+    };
+    Ok((Box::new(CancellableReader::new(reader, is_cancelled)), end))
 }
 
 struct FramedForwardReader {
