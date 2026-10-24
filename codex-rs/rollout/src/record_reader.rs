@@ -13,59 +13,29 @@ use zeekstd::SeekTable;
 use crate::ReverseJsonlScanner;
 use crate::RolloutLine;
 use crate::ScanOutcome;
+use crate::framed::archive_frame_lock;
 use crate::rollout_source::RolloutSource;
 use crate::rollout_source::Shifted;
 use crate::seekable_reader::CancellableReader;
 use crate::seekable_reader::open_plain_or_legacy_file;
 
-/// Reads the newline-terminated suffix after an existing projection's record-boundary byte checkpoint.
-/// Framed payloads are retrieved by physical record; a partial final JSONL line is deferred.
-pub fn read_rollout_records_from(path: &Path, start_offset: u64) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    let file = match RolloutSource::open_framed(path)? {
-        Some(RolloutSource::Framed(file)) => {
-            let mut source = FramedRecords::open(path, file)?;
-            let (index, skipped) = source.locate(start_offset)?;
-            let total = source.reader.total_records().map_err(io::Error::other)?;
-            let count = total
-                .checked_sub(index)
-                .ok_or_else(|| io::Error::other("rollout record index is past the file"))?;
-            if count > 0 {
-                source
-                    .reader
-                    .records_to(index, count, &mut bytes)
-                    .map_err(io::Error::other)?;
-            }
-            if skipped > 0 {
-                bytes.drain(..skipped);
-            }
-            None
-        }
-        Some(RolloutSource::Pending(file)) => Some(file),
-        None => Some(open_plain_or_legacy_file(path, &|| false)?),
-    };
-    if let Some(file) = file {
-        let mut reader = Shifted::new(file)?;
-        let count = reader
-            .seek(SeekFrom::End(0))?
-            .checked_sub(start_offset)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "rollout checkpoint is past the file",
-                )
-            })?;
-        bytes.resize(
-            usize::try_from(count).map_err(io::Error::other)?,
-            /*value*/ 0,
-        );
-        reader.seek(SeekFrom::Start(start_offset))?;
-        reader.read_exact(&mut bytes)?;
+fn lock_existing_archive(path: &Path) -> io::Result<Option<File>> {
+    match archive_frame_lock(path, false) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn read_rollout_records_from(path: &Path, start_offset: u64) -> io::Result<Vec<u8>> {
+    let (mut reader, _) = open_rollout_projection_reader(path, start_offset, || false)?;
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
     let complete = bytes
         .iter()
         .rposition(|byte| *byte == b'\n')
-        .map_or(/*default*/ 0, |last| last + 1);
+        .map_or(0, |last| last + 1);
     bytes.truncate(complete);
     Ok(bytes)
 }
@@ -82,9 +52,11 @@ pub fn open_rollout_projection_reader<'a>(
     if is_cancelled() {
         return Err(io::Error::other("rollout read cancelled"));
     }
+    let frame_lock = lock_existing_archive(path)?;
     let file = match RolloutSource::open_framed(path)? {
         Some(RolloutSource::Framed(file)) => {
             let mut source = FramedRecords::open(path, file)?;
+            drop(frame_lock);
             let end = source.table.size_decomp();
             let (next, skipped) = source.locate(start_offset)?;
             if skipped != 0 {
@@ -93,7 +65,7 @@ pub fn open_rollout_projection_reader<'a>(
                     "rollout checkpoint is inside a record",
                 ));
             }
-            let total = source.reader.total_records().map_err(io::Error::other)?;
+            let total = source.total;
             let reader = FramedForwardReader {
                 source,
                 next,
@@ -135,14 +107,9 @@ impl Read for FramedForwardReader {
             if self.next == self.total {
                 return Ok(0);
             }
-            self.record = self
-                .source
-                .reader
-                .record(self.next)
-                .map_err(io::Error::other)?
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
-                })?;
+            self.record = self.source.record(self.next)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
+            })?;
             self.next += 1;
             self.position = 0;
         }
@@ -184,9 +151,11 @@ impl RolloutReverseScanner {
         if is_cancelled() {
             return Err(io::Error::other("rollout read cancelled"));
         }
+        let frame_lock = lock_existing_archive(path)?;
         let file = match RolloutSource::open_framed(path)? {
             Some(RolloutSource::Framed(file)) => {
                 let mut source = FramedRecords::open(path, file)?;
+                drop(frame_lock);
                 let (next, partial) = source.locate(end.unwrap_or(source.table.size_decomp()))?;
                 if is_cancelled() {
                     return Err(io::Error::other("rollout read cancelled"));
@@ -225,13 +194,9 @@ impl RolloutReverseScanner {
             if len == 0 {
                 *next -= 1;
             }
-            let record = source
-                .reader
-                .record(*next)
-                .map_err(io::Error::other)?
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
-                })?;
+            let record = source.record(*next)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
+            })?;
             let record = if len == 0 {
                 &record[..]
             } else {
@@ -251,14 +216,53 @@ impl RolloutReverseScanner {
 struct FramedRecords {
     reader: RecordReader,
     table: SeekTable,
+    total: usize,
+    last_frame_start: usize,
+    last_frame: Vec<Vec<u8>>,
 }
 
 impl FramedRecords {
     fn open(path: &Path, mut file: File) -> io::Result<Self> {
         let table = SeekTable::from_seekable(&mut file).map_err(io::Error::other)?;
-        let reader =
+        let mut reader =
             RecordReader::from_file(path.to_owned(), file, b"\n").map_err(io::Error::other)?;
-        Ok(Self { reader, table })
+        let total = reader.total_records().map_err(io::Error::other)?;
+        let last_frame_start = if table.num_frames() == 0 {
+            0
+        } else {
+            usize::try_from(table.num_frames() - 1)
+                .map_err(io::Error::other)?
+                .checked_mul(reader.records_per_frame())
+                .ok_or_else(|| io::Error::other("rollout record index overflow"))?
+        };
+        let last_frame_len = total
+            .checked_sub(last_frame_start)
+            .ok_or_else(|| io::Error::other("rollout seek table exceeds record count"))?;
+        let mut last_frame = Vec::with_capacity(last_frame_len);
+        for index in last_frame_start..total {
+            last_frame.push(
+                reader
+                    .record(index)
+                    .map_err(io::Error::other)?
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
+                    })?,
+            );
+        }
+        Ok(Self {
+            reader,
+            table,
+            total,
+            last_frame_start,
+            last_frame,
+        })
+    }
+
+    fn record(&mut self, index: usize) -> io::Result<Option<Vec<u8>>> {
+        if index >= self.last_frame_start {
+            return Ok(self.last_frame.get(index - self.last_frame_start).cloned());
+        }
+        self.reader.record(index).map_err(io::Error::other)
     }
 
     /// Translates a persisted byte position into a physical record index and the bytes of that
@@ -272,8 +276,7 @@ impl FramedRecords {
             ));
         }
         if offset == self.table.size_decomp() {
-            let total = self.reader.total_records().map_err(io::Error::other)?;
-            return Ok((total, 0));
+            return Ok((self.total, 0));
         }
         let frame = self.table.frame_index_decomp(offset);
         let mut remaining = offset
@@ -286,13 +289,9 @@ impl FramedRecords {
             .checked_mul(self.reader.records_per_frame())
             .ok_or_else(|| io::Error::other("rollout record index overflow"))?;
         while remaining > 0 {
-            let record = self
-                .reader
-                .record(index)
-                .map_err(io::Error::other)?
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
-                })?;
+            let record = self.record(index)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
+            })?;
             if remaining < record.len() as u64 {
                 break;
             }
