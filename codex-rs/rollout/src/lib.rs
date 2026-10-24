@@ -108,7 +108,8 @@ pub use compression::plain_rollout_path;
 pub use compression::spawn_rollout_compression_worker;
 pub use record_reader::RolloutReverseScanner;
 pub use record_reader::open_rollout_projection_reader;
-pub use record_reader::read_rollout_records_from;
+#[cfg(test)]
+pub(crate) use record_reader::read_rollout_records_from;
 pub use rollout_source::framed_rollout_paths;
 pub use rollout_source::logical_path_of_framed;
 pub use rollout_source::stored_rollout_path;
