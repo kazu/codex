@@ -82,7 +82,10 @@ pub fn open_rollout_seekable_reader(
     let file = match crate::rollout_source::RolloutSource::open_framed(path)? {
         Some(crate::rollout_source::RolloutSource::Pending(file)) => {
             let mut decoded = tempfile::tempfile()?;
-            io::copy(&mut CancellableReader::new(file, &is_cancelled), &mut decoded)?;
+            io::copy(
+                &mut CancellableReader::new(file, &is_cancelled),
+                &mut decoded,
+            )?;
             decoded.rewind()?;
             decoded
         }
@@ -151,7 +154,10 @@ fn decode_to_temp(file: File, is_cancelled: &impl Fn() -> bool) -> io::Result<Fi
     // Empty and skippable frames can consume input without producing decoded bytes.
     let file = CancellableReader::new(file, is_cancelled);
     let decoder = zstd::stream::read::Decoder::new(file)?;
-    io::copy(&mut CancellableReader::new(decoder, is_cancelled), &mut decoded)?;
+    io::copy(
+        &mut CancellableReader::new(decoder, is_cancelled),
+        &mut decoded,
+    )?;
     decoded.rewind()?;
     Ok(decoded)
 }

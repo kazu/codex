@@ -49,11 +49,16 @@ async fn framed_readers_preserve_logical_bytes() -> anyhow::Result<()> {
                     crate::read_rollout_prefix(input, offset)?,
                     Some(expected.as_bytes()[..offset].to_vec())
                 );
-                assert!(crate::rollout_contains_prefix(input, offset as u64)?);
+                assert!(crate::rollout_contains_prefix(
+                    input,
+                    offset as u64,
+                    || false
+                )?);
             }
             assert!(!crate::rollout_contains_prefix(
                 input,
-                expected.len() as u64 + 1
+                expected.len() as u64 + 1,
+                || false
             )?);
         }
     }
@@ -124,8 +129,8 @@ async fn pending_without_a_complete_header_reads_like_an_empty_plain_rollout() -
                 .unwrap_err()
                 .kind(),
             crate::read_rollout_prefix(&path, /*max_bytes*/ 10)?,
-            crate::rollout_contains_prefix(&path, /*end_byte_offset*/ 0)?,
-            crate::rollout_contains_prefix(&path, /*end_byte_offset*/ 1)?,
+            crate::rollout_contains_prefix(&path, /*end_byte_offset*/ 0, || false)?,
+            crate::rollout_contains_prefix(&path, /*end_byte_offset*/ 1, || false)?,
             scanner.scan_next_rollout_line()?.is_none(),
         ));
     }
