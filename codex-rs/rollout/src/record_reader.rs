@@ -13,19 +13,10 @@ use zeekstd::SeekTable;
 use crate::ReverseJsonlScanner;
 use crate::RolloutLine;
 use crate::ScanOutcome;
-use crate::framed::archive_frame_lock;
 use crate::rollout_source::RolloutSource;
 use crate::rollout_source::Shifted;
 use crate::seekable_reader::CancellableReader;
 use crate::seekable_reader::open_plain_or_legacy_file;
-
-fn lock_existing_archive(path: &Path) -> io::Result<Option<File>> {
-    match archive_frame_lock(path, false) {
-        Ok(lock) => Ok(Some(lock)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-}
 
 #[cfg(test)]
 pub(crate) fn read_rollout_records_from(path: &Path, start_offset: u64) -> io::Result<Vec<u8>> {
@@ -52,11 +43,12 @@ pub fn open_rollout_projection_reader<'a>(
     if is_cancelled() {
         return Err(io::Error::other("rollout read cancelled"));
     }
-    let frame_lock = lock_existing_archive(path)?;
     let file = match RolloutSource::open_framed(path)? {
         Some(RolloutSource::Framed(file)) => {
+            let frame_lock = file.try_clone()?;
+            frame_lock.lock_shared()?;
             let mut source = FramedRecords::open(path, file)?;
-            drop(frame_lock);
+            frame_lock.unlock()?;
             let end = source.table.size_decomp();
             let (next, skipped) = source.locate(start_offset)?;
             if skipped != 0 {
@@ -151,11 +143,12 @@ impl RolloutReverseScanner {
         if is_cancelled() {
             return Err(io::Error::other("rollout read cancelled"));
         }
-        let frame_lock = lock_existing_archive(path)?;
         let file = match RolloutSource::open_framed(path)? {
             Some(RolloutSource::Framed(file)) => {
+                let frame_lock = file.try_clone()?;
+                frame_lock.lock_shared()?;
                 let mut source = FramedRecords::open(path, file)?;
-                drop(frame_lock);
+                frame_lock.unlock()?;
                 let (next, partial) = source.locate(end.unwrap_or(source.table.size_decomp()))?;
                 if is_cancelled() {
                     return Err(io::Error::other("rollout read cancelled"));
