@@ -43,25 +43,34 @@ fn readers_keep_the_last_frame_when_a_writer_appends() -> anyhow::Result<()> {
         writer.promote()?;
     }
 
-    let (mut forward, endpoint) = open_rollout_projection_reader(&path, 0, || false)?;
-    let mut reverse = RolloutReverseScanner::open(&path)?;
+    let (forward, endpoint) = open_rollout_projection_reader(&path, 0, || false)?;
+    let reverse = RolloutReverseScanner::open(&path)?;
+    let archive = crate::framed::get_archive_path(&path);
+    let (forward_archive, endpoint_archive) =
+        open_rollout_projection_reader(&archive, 0, || false)?;
+    let reverse_archive = RolloutReverseScanner::open(&archive)?;
     writer.append(records[3].as_bytes())?;
 
-    let mut bytes = Vec::new();
-    forward.read_to_end(&mut bytes)?;
-    assert_eq!(bytes, records[..3].concat().as_bytes());
-    assert_eq!(endpoint, bytes.len() as u64);
-    let mut reversed = Vec::new();
-    while let Some(outcome) = reverse.scan_next_rollout_line()? {
-        if let ScanOutcome::Parsed(line) = outcome {
-            reversed.push(line);
+    for (mut forward, mut reverse, endpoint) in [
+        (forward, reverse, endpoint),
+        (forward_archive, reverse_archive, endpoint_archive),
+    ] {
+        let mut bytes = Vec::new();
+        forward.read_to_end(&mut bytes)?;
+        assert_eq!(bytes, records[..3].concat().as_bytes());
+        assert_eq!(endpoint, bytes.len() as u64);
+        let mut reversed = Vec::new();
+        while let Some(outcome) = reverse.scan_next_rollout_line()? {
+            if let ScanOutcome::Parsed(line) = outcome {
+                reversed.push(line);
+            }
         }
+        assert_eq!(reversed.len(), 3);
+        assert_eq!(
+            serde_json::to_value(&reversed[0])?,
+            serde_json::from_str::<serde_json::Value>(&records[2])?
+        );
     }
-    assert_eq!(reversed.len(), 3);
-    assert_eq!(
-        serde_json::to_value(&reversed[0])?,
-        serde_json::from_str::<serde_json::Value>(&records[2])?
-    );
     Ok(())
 }
 
@@ -74,12 +83,13 @@ fn opening_a_reader_waits_for_an_active_frame_edit() -> anyhow::Result<()> {
     writer.append(compacted_record("two").as_bytes())?;
     writer.promote()?;
     let lock = crate::framed::archive_frame_lock(&path, true)?;
+    let archive = crate::framed::get_archive_path(&path);
     let (started_tx, started_rx) = mpsc::channel();
     let (finished_tx, finished_rx) = mpsc::channel();
     let reader = std::thread::spawn(move || {
         started_tx.send(()).unwrap();
         finished_tx
-            .send(RolloutReverseScanner::open(&path).is_ok())
+            .send(RolloutReverseScanner::open(&archive).is_ok())
             .unwrap();
     });
     started_rx.recv_timeout(Duration::from_secs(2))?;
