@@ -312,8 +312,7 @@ pub(crate) fn read_framed_prefix(
         return Ok(Some(None));
     }
     let reader: Box<dyn Read> = if framed {
-        drop(file);
-        crate::record_reader::open_rollout_projection_reader(path, 0, || false)?.0
+        crate::record_reader::open_framed_projection_reader(path, file, 0, || false)?.0
     } else {
         Box::new(file)
     };
