@@ -171,7 +171,7 @@ pub(crate) async fn open_framed_lines(
                     records: Some(reader.into_records()),
                     batch: VecDeque::new(),
                 };
-                Ok((RolloutLineReaderInner::Framed(lines), "zstd"))
+                Ok((RolloutLineReaderInner::Framed(Box::new(lines)), "zstd"))
             }
             Some((RolloutSource::Pending(file), _)) => {
                 let file = tokio::fs::File::from_std(file);
@@ -267,7 +267,7 @@ pub(crate) fn ordinal_state_for_framed(
     records: StoredRecords,
 ) -> io::Result<RolloutOrdinalState> {
     let reader = match records {
-        StoredRecords::Archive(reader) => reader,
+        StoredRecords::Archive(reader) => *reader,
         StoredRecords::Pending(bytes) => {
             return ordinal_state_for_rollout(&mut io::Cursor::new(bytes), path);
         }

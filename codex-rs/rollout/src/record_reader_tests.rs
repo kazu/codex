@@ -9,7 +9,7 @@ fn compacted_record(message: &str) -> String {
     let line = RolloutLine {
         timestamp: "2026-09-21T00:00:00Z".to_owned(),
         ordinal: None,
-        item: crate::RolloutItem::Compacted(crate::CompactedItem {
+        item: crate::RolloutItem::Compacted(Box::new(crate::CompactedItem {
             message: message.to_owned(),
             replacement_history: None,
             guardian_history: None,
@@ -22,7 +22,7 @@ fn compacted_record(message: &str) -> String {
             compaction_response_id: None,
             latest_token_usage_record: None,
             resume_metadata: None,
-        }),
+        })),
     };
     format!("{}\n", serde_json::to_string(&line).unwrap())
 }
@@ -90,6 +90,14 @@ fn records_preserve_frozen_record_boundaries_across_formats() -> anyhow::Result<
                 }
             }
         }
+        for start in [0, lines[0].len(), body.len()] {
+            let (mut reader, end) = open_rollout_projection_reader(&path, start as u64, || false)?;
+            assert_eq!(end, body.len() as u64, "{format}");
+            let mut actual = Vec::new();
+            reader.read_to_end(&mut actual)?;
+            assert_eq!(actual, body.as_bytes()[start..], "{format} at {start}");
+        }
+        assert!(open_rollout_projection_reader(&path, 0, || true).is_err());
         assert!(RolloutReverseScanner::open_at(&path, body.len() as u64 + 1).is_err());
         assert!(read_rollout_records_from(&path, body.len() as u64 + 1).is_err());
     }
