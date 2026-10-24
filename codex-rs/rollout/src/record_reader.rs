@@ -45,24 +45,7 @@ pub fn open_rollout_projection_reader<'a>(
     }
     let file = match RolloutSource::open_framed(path)? {
         Some(RolloutSource::Framed(file)) => {
-            let mut source = FramedRecords::open(path, file)?;
-            let end = source.table.size_decomp();
-            let (next, skipped) = source.locate(start_offset)?;
-            if skipped != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "rollout checkpoint is inside a record",
-                ));
-            }
-            let total = source.total;
-            let reader = FramedForwardReader {
-                source,
-                next,
-                total,
-                record: Vec::new(),
-                position: 0,
-            };
-            return Ok((Box::new(CancellableReader::new(reader, is_cancelled)), end));
+            return open_framed_projection_reader(path, file, start_offset, is_cancelled);
         }
         Some(RolloutSource::Pending(file)) => file,
         None => open_plain_or_legacy_file(path, &is_cancelled)?,
@@ -76,6 +59,35 @@ pub fn open_rollout_projection_reader<'a>(
         ));
     }
     reader.seek(SeekFrom::Start(start_offset))?;
+    Ok((Box::new(CancellableReader::new(reader, is_cancelled)), end))
+}
+
+pub(crate) fn open_framed_projection_reader<'a>(
+    path: &Path,
+    file: File,
+    start_offset: u64,
+    is_cancelled: impl Fn() -> bool + 'a,
+) -> io::Result<(Box<dyn Read + 'a>, u64)> {
+    if is_cancelled() {
+        return Err(io::Error::other("rollout read cancelled"));
+    }
+    let mut source = FramedRecords::open(path, file)?;
+    let end = source.table.size_decomp();
+    let (next, skipped) = source.locate(start_offset)?;
+    if skipped != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rollout checkpoint is inside a record",
+        ));
+    }
+    let total = source.total;
+    let reader = FramedForwardReader {
+        source,
+        next,
+        total,
+        record: Vec::new(),
+        position: 0,
+    };
     Ok((Box::new(CancellableReader::new(reader, is_cancelled)), end))
 }
 

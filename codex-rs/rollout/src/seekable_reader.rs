@@ -90,9 +90,8 @@ pub fn open_rollout_seekable_reader(
             decoded
         }
         Some(crate::rollout_source::RolloutSource::Framed(file)) => {
-            drop(file);
             let (mut reader, _) =
-                crate::record_reader::open_rollout_projection_reader(path, 0, &is_cancelled)?;
+                crate::record_reader::open_framed_projection_reader(path, file, 0, &is_cancelled)?;
             let mut decoded = tempfile::tempfile()?;
             io::copy(&mut reader, &mut decoded)?;
             decoded.rewind()?;
