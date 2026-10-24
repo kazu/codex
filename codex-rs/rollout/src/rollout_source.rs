@@ -16,6 +16,7 @@ use crate::framed::StoredRecords;
 use crate::ordinal::RolloutOrdinalState;
 use crate::ordinal::ordinal_state_for_rollout;
 use crate::plain_rollout_path;
+use crate::record_reader::FramedRecords;
 
 pub(crate) fn get_rollout_paths(path: &Path) -> io::Result<[PathBuf; 4]> {
     let plain = plain_rollout_path(path);
@@ -163,12 +164,11 @@ pub(crate) async fn open_framed_lines(
         let [_, _, archive_path, pending_path] = get_rollout_paths(&path)?;
         match RolloutSource::open_fork(archive_path, pending_path)? {
             Some((RolloutSource::Framed(file), path)) => {
-                let reader = seekzstdsep::RecordReader::from_file(path, file, b"\n")
-                    .map_err(io::Error::other)?;
+                let reader = FramedRecords::open(&path, file)?;
                 let lines = FramedLines {
                     max_batch_len: reader.records_per_frame(),
                     batch_len: FIRST_BATCH_LEN.min(reader.records_per_frame()),
-                    records: Some(reader.into_records()),
+                    records: Some(Box::new(reader.into_records())),
                     batch: VecDeque::new(),
                 };
                 Ok((RolloutLineReaderInner::Framed(Box::new(lines)), "zstd"))
@@ -192,7 +192,7 @@ const FIRST_BATCH_LEN: usize = 8;
 /// Lines of a framed archive, decoded record by record in batches so the blocking pool is
 /// entered once per batch rather than once per line.
 pub(crate) struct FramedLines {
-    records: Option<seekzstdsep::RecordIter>,
+    records: Option<Box<dyn Iterator<Item = anyhow::Result<Vec<u8>>> + Send>>,
     batch_len: usize,
     max_batch_len: usize,
     batch: VecDeque<io::Result<String>>,
@@ -312,7 +312,8 @@ pub(crate) fn read_framed_prefix(
         return Ok(Some(None));
     }
     let reader: Box<dyn Read> = if framed {
-        Box::new(zstd::stream::read::Decoder::new(file)?)
+        drop(file);
+        crate::record_reader::open_rollout_projection_reader(path, 0, || false)?.0
     } else {
         Box::new(file)
     };
@@ -328,9 +329,13 @@ pub(crate) fn framed_contains_prefix(
     end_byte_offset: u64,
 ) -> io::Result<Option<bool>> {
     let len = match RolloutSource::open_framed(path)? {
-        Some(RolloutSource::Framed(mut file)) => zeekstd::SeekTable::from_seekable(&mut file)
-            .map_err(io::Error::other)?
-            .size_decomp(),
+        Some(RolloutSource::Framed(mut file)) => {
+            let lock = file.try_clone()?;
+            lock.lock_shared()?;
+            let table = zeekstd::SeekTable::from_seekable(&mut file).map_err(io::Error::other);
+            lock.unlock()?;
+            table?.size_decomp()
+        }
         Some(RolloutSource::Pending(file)) => Shifted::new(file)?.seek(SeekFrom::End(0))?,
         None => return Ok(None),
     };
