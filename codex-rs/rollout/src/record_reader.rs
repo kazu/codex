@@ -72,7 +72,7 @@ pub fn read_rollout_records_from(path: &Path, start_offset: u64) -> io::Result<V
 
 /// Opens a bounded forward projection stream at a complete-record byte checkpoint.
 ///
-/// The returned endpoint is frozen when the representation is opened. Framed files are decoded
+/// The returned endpoint is captured when the representation is opened. Framed files are decoded
 /// one physical record at a time; other representations retain an open seekable snapshot.
 pub fn open_rollout_projection_reader<'a>(
     path: &Path,
@@ -88,6 +88,9 @@ pub fn open_rollout_projection_reader_with_minimum<'a>(
     minimum_len: Option<u64>,
     is_cancelled: impl Fn() -> bool + 'a,
 ) -> io::Result<(Box<dyn Read + 'a>, u64)> {
+    if is_cancelled() {
+        return Err(io::Error::other("rollout read cancelled"));
+    }
     let file = match RolloutSource::open_framed(path)? {
         Some(RolloutSource::Framed(file)) => {
             let mut source = FramedRecords::open(path, file)?;

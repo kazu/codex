@@ -20,7 +20,7 @@ use crate::framed::FramedWriter;
 
 fn rollout_lines(thread_id: ThreadId, cwd: &Path, message: &str) -> Vec<String> {
     [
-        RolloutItem::SessionMeta(SessionMetaLine {
+        RolloutItem::SessionMeta(Box::new(SessionMetaLine {
             meta: SessionMeta {
                 session_id: thread_id.into(),
                 id: thread_id,
@@ -32,7 +32,7 @@ fn rollout_lines(thread_id: ThreadId, cwd: &Path, message: &str) -> Vec<String> 
                 ..Default::default()
             },
             git: None,
-        }),
+        })),
         RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
             message: message.to_string(),
             ..Default::default()
