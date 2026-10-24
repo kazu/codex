@@ -268,8 +268,8 @@ pub(crate) fn ordinal_state_for_framed(
 ) -> io::Result<RolloutOrdinalState> {
     let reader = match records {
         StoredRecords::Archive(reader) => *reader,
-        StoredRecords::Pending(bytes) => {
-            return ordinal_state_for_rollout(&mut io::Cursor::new(bytes), path);
+        StoredRecords::Pending(file) => {
+            return ordinal_state_for_rollout(&mut Shifted::new(file)?, path);
         }
     };
     // The two ends of the iterator never yield the same record twice.
