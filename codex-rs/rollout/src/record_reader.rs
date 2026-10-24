@@ -45,10 +45,7 @@ pub fn open_rollout_projection_reader<'a>(
     }
     let file = match RolloutSource::open_framed(path)? {
         Some(RolloutSource::Framed(file)) => {
-            let frame_lock = file.try_clone()?;
-            frame_lock.lock_shared()?;
             let mut source = FramedRecords::open(path, file)?;
-            frame_lock.unlock()?;
             let end = source.table.size_decomp();
             let (next, skipped) = source.locate(start_offset)?;
             if skipped != 0 {
@@ -145,10 +142,7 @@ impl RolloutReverseScanner {
         }
         let file = match RolloutSource::open_framed(path)? {
             Some(RolloutSource::Framed(file)) => {
-                let frame_lock = file.try_clone()?;
-                frame_lock.lock_shared()?;
                 let mut source = FramedRecords::open(path, file)?;
-                frame_lock.unlock()?;
                 let (next, partial) = source.locate(end.unwrap_or(source.table.size_decomp()))?;
                 if is_cancelled() {
                     return Err(io::Error::other("rollout read cancelled"));
@@ -206,7 +200,7 @@ impl RolloutReverseScanner {
     }
 }
 
-struct FramedRecords {
+pub(crate) struct FramedRecords {
     reader: RecordReader,
     table: SeekTable,
     total: usize,
@@ -215,7 +209,15 @@ struct FramedRecords {
 }
 
 impl FramedRecords {
-    fn open(path: &Path, mut file: File) -> io::Result<Self> {
+    pub(crate) fn open(path: &Path, file: File) -> io::Result<Self> {
+        let frame_lock = file.try_clone()?;
+        frame_lock.lock_shared()?;
+        let opened = Self::open_locked(path, file);
+        frame_lock.unlock()?;
+        opened
+    }
+
+    fn open_locked(path: &Path, mut file: File) -> io::Result<Self> {
         let table = SeekTable::from_seekable(&mut file).map_err(io::Error::other)?;
         let mut reader =
             RecordReader::from_file(path.to_owned(), file, b"\n").map_err(io::Error::other)?;
@@ -248,6 +250,30 @@ impl FramedRecords {
             total,
             last_frame_start,
             last_frame,
+        })
+    }
+
+    pub(crate) fn records_per_frame(&self) -> usize {
+        self.reader.records_per_frame()
+    }
+
+    pub(crate) fn into_records(mut self) -> impl Iterator<Item = anyhow::Result<Vec<u8>>> + Send {
+        let mut next = 0;
+        std::iter::from_fn(move || {
+            if next == self.total {
+                return None;
+            }
+            let index = next;
+            next += 1;
+            Some(
+                self.record(index)
+                    .and_then(|record| {
+                        record.ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::UnexpectedEof, "missing rollout record")
+                        })
+                    })
+                    .map_err(anyhow::Error::from),
+            )
         })
     }
 

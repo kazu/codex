@@ -5,6 +5,59 @@ use pretty_assertions::assert_eq;
 use super::*;
 
 #[tokio::test]
+async fn framed_line_reader_keeps_its_final_frame_after_append() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.jsonl");
+    let mut writer =
+        crate::framed::FramedWriter::open(&path, std::num::NonZeroUsize::new(2).unwrap())?;
+    for line in ["one\n", "two\n", "three\n"] {
+        writer.append(line.as_bytes())?;
+        writer.promote()?;
+    }
+    let archive = crate::framed::get_archive_path(&path);
+    let mut lines = crate::open_rollout_line_reader(&archive).await?;
+    writer.append(b"four\n")?;
+    assert_eq!(lines.next_line().await?, Some("one".to_owned()));
+    assert_eq!(lines.next_line().await?, Some("two".to_owned()));
+    assert_eq!(lines.next_line().await?, Some("three".to_owned()));
+    assert_eq!(lines.next_line().await?, None);
+    Ok(())
+}
+
+#[test]
+fn framed_prefix_check_waits_for_an_active_edit() -> anyhow::Result<()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rollout.jsonl");
+    let mut writer =
+        crate::framed::FramedWriter::open(&path, std::num::NonZeroUsize::new(2).unwrap())?;
+    writer.append(b"one\n")?;
+    writer.append(b"two\n")?;
+    writer.promote()?;
+    let lock = crate::framed::archive_frame_lock(&path, true)?;
+    let archive = crate::framed::get_archive_path(&path);
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        finished_tx
+            .send(framed_contains_prefix(&archive, 4).unwrap())
+            .unwrap();
+    });
+    started_rx.recv_timeout(Duration::from_secs(2))?;
+    assert!(finished_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    drop(lock);
+    assert_eq!(
+        finished_rx.recv_timeout(Duration::from_secs(2))?,
+        Some(true)
+    );
+    reader.join().unwrap();
+    Ok(())
+}
+
+#[tokio::test]
 async fn framed_readers_preserve_logical_bytes() -> anyhow::Result<()> {
     use crate::framed::FramedWriter;
     use std::num::NonZeroUsize;
