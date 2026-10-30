@@ -34,7 +34,10 @@ pub(crate) enum StoredRecords {
 
 /// Serializes replacement of the archive's last frame with readers taking a snapshot of it.
 pub(crate) fn archive_frame_lock(path: &Path, exclusive: bool) -> io::Result<File> {
-    let lock = File::open(get_archive_path(path))?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(exclusive)
+        .open(get_archive_path(path))?;
     if exclusive {
         lock.lock()?;
     } else {
