@@ -75,18 +75,28 @@ fn appends_directly_after_the_first_archive() -> anyhow::Result<()> {
     let path = dir.path().join("rollout.jsonl");
     let mut writer = FramedWriter::open(&path, NonZeroUsize::new(/*n*/ 255).unwrap())?;
     let mut expected = Vec::new();
-    for index in 0..255 {
+    for index in 0..254 {
         let line = format!("{{\"index\":{index}}}\n");
         writer.append(line.as_bytes())?;
         expected.extend_from_slice(line.as_bytes());
     }
     writer.promote()?;
+    assert!(!get_archive_path(&path).exists());
+    let mut pending = 0_u64.to_le_bytes().to_vec();
+    pending.extend_from_slice(&expected);
+    assert_eq!(std::fs::read(get_pending_path(&path)?)?, pending);
+    let line = b"{\"index\":254}\n";
+    writer.append(line)?;
+    expected.extend_from_slice(line);
+    writer.promote()?;
+    assert_eq!(archive_records(&path)?, (255, expected.clone()));
     assert!(!get_pending_path(&path)?.exists());
     for index in 255..513 {
         let line = format!("{{\"index\":{index}}}\n");
         writer.append(line.as_bytes())?;
         expected.extend_from_slice(line.as_bytes());
         assert_eq!(archive_records(&path)?, (255, expected.clone()));
+        assert!(!get_pending_path(&path)?.exists());
         if index == 255 {
             drop(writer);
             writer = FramedWriter::open(&path, NonZeroUsize::new(/*n*/ 7).unwrap())?;
