@@ -146,8 +146,9 @@ impl FramedWriter {
             seekzstdsep::OnMissingSeparator::Refuse,
             seekzstdsep::CompressOptions::default().level,
             Some(self.records_per_frame.get()),
-            /*trust_records_per_frame*/ true,
+            seekzstdsep::AppendOptions::new().trust_records_per_frame(true),
         )
+        .map(|_| ())
         .map_err(|error| {
             io::Error::other(error.context(format!(
                 "compressed rollout append failed; stop all writers, then run \
