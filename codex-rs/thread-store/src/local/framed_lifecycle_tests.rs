@@ -25,6 +25,57 @@ use crate::ThreadStoreError;
 use crate::local::LocalThreadStore;
 use crate::local::test_support::test_config;
 
+#[tokio::test]
+async fn original_history_reads_the_same_suffix_from_each_storage_format() {
+    use std::io::Write;
+
+    let mut results = Vec::new();
+    for storage in ["plain", "pending", "archive"] {
+        let home = TempDir::new().unwrap();
+        let uuid = uuid::Uuid::from_u128(0x1234);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).unwrap();
+        let path = super::test_support::write_session_file_with_history_mode(
+            home.path(),
+            "2025-01-03T10-00-00",
+            uuid,
+            ThreadHistoryMode::Paginated,
+        )
+        .unwrap();
+        let store = LocalThreadStore::new(test_config(home.path()), None);
+        let start = store
+            .read_original_history(thread_id, crate::OriginalHistoryRequest::Tail)
+            .await
+            .unwrap()
+            .end;
+        let record = serde_json::json!({"timestamp":"2025-01-03T10:00:01Z","ordinal":1,
+            "type":"response_item","payload":{"type":"message","role":"assistant",
+            "content":[{"type":"output_text","text":"original"}]}});
+        writeln!(
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap(),
+            "{record}"
+        )
+        .unwrap();
+        if storage != "plain" {
+            super::framed_test_support::convert_to_framed(&path, storage);
+        }
+        let read = store
+            .read_original_history(thread_id, crate::OriginalHistoryRequest::After(start))
+            .await
+            .unwrap();
+        assert_eq!(read.items.len(), 1);
+        results.push((
+            serde_json::to_value(&read.items[0].item).unwrap(),
+            read.end.end_ordinal_exclusive,
+            read.end.end_byte_offset - start.end_byte_offset,
+        ));
+    }
+    assert_eq!(results[1], results[0]);
+    assert_eq!(results[2], results[0]);
+}
+
 fn user_message(message: String) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
         message,
@@ -85,7 +136,7 @@ async fn framed_thread_lives_through_the_store_like_a_plain_thread() {
                 history_mode: ThreadHistoryMode::Legacy,
                 history_base: None,
                 subagent_history_start_ordinal: None,
-                initial_window_id: uuid::Uuid::now_v7().to_string(),
+                initial_window_id: codex_protocol::ContextWindowId::new_uuid_v7(),
                 runtime_workspace_roots: None,
                 metadata: metadata(home.path()),
             })
