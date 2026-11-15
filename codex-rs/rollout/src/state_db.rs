@@ -562,11 +562,15 @@ pub(super) async fn reconcile_rollout_from_disk(
     // Filesystem repair may seed a missing row, but it must not change an existing row's
     // selected rollout path. After `thread/revert`, a scan can find multiple immutable
     // rollouts for one thread and cannot know which one SQLite selected.
-    if existing_metadata
-        .as_ref()
-        .is_some_and(|existing| existing.rollout_path.as_path() != rollout_path)
-    {
+    if existing_metadata.as_ref().is_some_and(|existing| {
+        existing.rollout_path.as_path() != rollout_path
+            && crate::logical_path_of_framed(&existing.rollout_path)
+                != crate::logical_path_of_framed(rollout_path)
+    }) {
         return;
+    }
+    if let Some(existing) = &existing_metadata {
+        metadata.rollout_path.clone_from(&existing.rollout_path);
     }
     // Paginated metadata updates are SQLite-only. Use the rollout mode to seed a
     // missing row, then keep the value from SQLite.

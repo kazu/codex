@@ -4,6 +4,68 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 
+#[tokio::test]
+async fn reconcile_search_metadata_matches_plain_and_framed_paths() -> anyhow::Result<()> {
+    let mut titles = Vec::new();
+    for storage in ["plain", "pending", "archive"] {
+        let home = TempDir::new()?;
+        let uuid = Uuid::from_u128(9014);
+        let thread_id = ThreadId::from_string(&uuid.to_string())?;
+        let path = write_session_file(home.path(), "2025-01-03T15-00-00", uuid)?;
+        let config = test_config(home.path());
+        let runtime = codex_state::StateRuntime::init(
+            codex_state::SqliteConfig::new_for_testing(home.path().abs()),
+            config.model_provider_id.clone(),
+        )
+        .await?;
+        let mut metadata = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            path.clone(),
+            chrono::Utc::now(),
+            SessionSource::Cli,
+        )
+        .with_model_provider(Some(config.model_provider_id.clone()))
+        .with_cwd(home.path().to_path_buf())
+        .build(&config.model_provider_id);
+        metadata.title = "stale title".to_owned();
+        metadata.first_user_message = Some(metadata.title.clone());
+        metadata.preview = metadata.first_user_message.clone();
+        runtime.upsert_thread(&metadata).await?;
+        if storage != "plain" {
+            convert_to_framed(&path, storage)?;
+        }
+        let stored = crate::existing_rollout_path(&path).await.unwrap();
+        crate::state_db::reconcile_rollout_from_disk(
+            &runtime,
+            &stored,
+            &config.model_provider_id,
+            Some(false),
+            Some(home.path()),
+        )
+        .await;
+        let updated = runtime.get_thread(thread_id).await?.unwrap();
+        assert_eq!(updated.rollout_path, path);
+        titles.push(updated.title);
+        metadata.rollout_path = home.path().join("another-rollout.jsonl");
+        runtime.upsert_thread(&metadata).await?;
+        crate::state_db::reconcile_rollout_from_disk(
+            &runtime,
+            &stored,
+            &config.model_provider_id,
+            Some(false),
+            Some(home.path()),
+        )
+        .await;
+        let unchanged = runtime.get_thread(thread_id).await?.unwrap();
+        assert_eq!(unchanged.rollout_path, metadata.rollout_path);
+        assert_eq!(unchanged.title, "stale title");
+    }
+    assert_eq!(titles[0], "Hello from user");
+    assert_eq!(titles[1], titles[0]);
+    assert_eq!(titles[2], titles[0]);
+    Ok(())
+}
+
 /// Replaces a plain rollout with framed storage; `"archive"` uses three records per frame.
 fn convert_to_framed(path: &Path, storage: &str) -> anyhow::Result<()> {
     let bytes = fs::read(path)?;
