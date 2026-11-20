@@ -32,15 +32,32 @@ async fn framed_realtime_seal_retries_directory_sync() -> std::io::Result<()> {
             observed_at_ms: Some(1),
             content: codex_protocol::realtime::RealtimeItemContent::RealtimeSessionStarted,
         });
-        recorder.record_canonical_items(&[record]).await?;
+        recorder
+            .record_canonical_items(std::slice::from_ref(&record))
+            .await?;
         recorder.persist().await?;
         let parent = recorder.rollout_path().parent().expect("rollout directory");
         let moved = home.path().join("moved");
         fs::rename(parent, &moved)?;
         let error = recorder.flush().await.unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error:?}");
-        fs::rename(moved, parent)?;
+        fs::rename(&moved, parent)?;
         recorder.flush().await?;
+        if frame_size == 255 {
+            let archive = crate::framed::get_archive_path(recorder.rollout_path());
+            assert!(!archive.exists());
+            let items: Vec<_> = (0..255).map(|_| agent_message_item("promote")).collect();
+            recorder.record_canonical_items(&items).await?;
+            recorder.persist().await?;
+            assert!(archive.exists());
+            recorder.record_canonical_items(&[record]).await?;
+            recorder.persist().await?;
+            fs::rename(parent, &moved)?;
+            let error = recorder.flush().await.unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error:?}");
+            fs::rename(&moved, parent)?;
+            recorder.flush().await?;
+        }
         recorder.shutdown().await?;
     }
     Ok(())

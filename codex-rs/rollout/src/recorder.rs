@@ -1956,6 +1956,15 @@ impl RolloutWriterState {
         self.write_pending_items_once().await?;
 
         if let Some(writer) = self.writer.as_mut() {
+            // A framed flush can create an archive and remove its pending file.
+            // Sync the parent again before acknowledging a later realtime seal.
+            #[cfg(unix)]
+            if matches!(writer, JsonlWriter::Framed(_))
+                && self.directories_to_sync.is_empty()
+                && let Some(parent) = self.rollout_path.parent()
+            {
+                self.directories_to_sync.push(parent.to_owned());
+            }
             writer.flush().await?;
         }
         Ok(())
