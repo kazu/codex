@@ -76,6 +76,7 @@ async fn authoritative_search_rechecks_stale_compressed_discovery() {
     std::fs::write(path.with_extension("jsonl.zst"), compressed).expect("write compressed rollout");
     std::fs::remove_file(&path).expect("remove plain rollout");
     let rollout_config = codex_rollout::RolloutConfig {
+        rollout_compression: None,
         codex_home: config.codex_home.clone(),
         sqlite: config.sqlite.clone(),
         cwd: config.codex_home,

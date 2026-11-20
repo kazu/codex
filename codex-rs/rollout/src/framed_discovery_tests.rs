@@ -136,17 +136,24 @@ async fn framed_storage_is_discovered_as_one_logical_rollout() -> anyhow::Result
             "{storage}"
         );
 
-        let matches = crate::search_rollout_matches(
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(4);
+        let matches = crate::search::search_rollout_matches_with_progress(
             Path::new("missing-rg-for-test"),
             home.path(),
             /*archived*/ false,
             "search term",
+            Some(progress_tx),
+            Box::pin(std::future::pending()),
         )
         .await?;
         assert_eq!(
             matches.into_iter().collect::<Vec<_>>(),
-            vec![(path.clone(), Some("targeted search term".to_string()))],
+            vec![path.clone()],
             "{storage}"
+        );
+        assert_eq!(
+            progress_rx.recv().await.map(|candidate| candidate.path),
+            Some(path.clone())
         );
 
         // A legacy zstd file, then a plain file, takes precedence over framed storage.
