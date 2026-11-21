@@ -11,12 +11,7 @@ impl ToolRegistry {
     ) {
         let is_reserved =
             |name: &str| name.starts_with(NAMESPACE_PREFIX) || name.starts_with(PLAIN_PREFIX);
-        let mut used_names: HashSet<String> = self
-            .tools
-            .keys()
-            .filter(|name| name.is_default_namespace() && !is_reserved(&name.name))
-            .map(|name| name.name.clone())
-            .collect();
+        let mut used_names = HashSet::new();
         let mut names = self
             .tools
             .iter()
@@ -39,17 +34,13 @@ impl ToolRegistry {
                             .with_default_namespace();
                         if !name.is_default_namespace() || is_reserved(&name.name) {
                             names.insert(name);
-                        } else {
-                            used_names.insert(name.name);
                         }
                     }
                 }
                 _ if is_reserved(spec.name()) => {
                     names.insert(ToolName::plain(spec.name()).with_default_namespace());
                 }
-                _ => {
-                    used_names.insert(spec.name().to_string());
-                }
+                _ => {}
             }
         }
         let mut flat_names = BTreeMap::new();
@@ -152,7 +143,6 @@ impl ToolRegistry {
             .map(|spec| match spec {
                 ToolSpec::Function(tool) => LoadableToolSpec::Function(tool),
                 ToolSpec::Freeform(tool) => LoadableToolSpec::Custom(tool),
-                ToolSpec::Namespace(namespace) => LoadableToolSpec::Namespace(namespace),
                 _ => unreachable!(
                     "loadable tool specifications contain only functions and namespaces"
                 ),
