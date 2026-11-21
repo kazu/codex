@@ -1,4 +1,9 @@
+mod flat_tool_names;
+
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -43,9 +48,13 @@ use codex_rollout::state_db;
 use codex_rollout_trace::ExecutionStatus;
 use codex_shell_command::parse_command::parse_shell_script;
 use codex_tools::FunctionsNamespaceFunctionPrefixes;
+use codex_tools::LoadableToolSpec;
+use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
+use codex_tools::code_mode_name_for_tool_name;
+use codex_tools::prepend_description;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use indexmap::IndexMap;
@@ -465,6 +474,8 @@ impl RegisteredTool {
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: IndexMap<ToolName, RegisteredTool>,
+    flat_tool_names: Option<BTreeMap<ToolName, String>>,
+    flat_tool_aliases: HashMap<ToolName, ToolName>,
     functions_namespace_function_prefixes: FunctionsNamespaceFunctionPrefixes,
     first_collision: Option<ToolName>,
     pub(crate) tool_policy: Arc<ToolPolicy>,
@@ -726,7 +737,8 @@ impl ToolRegistry {
     }
 
     pub(crate) fn registered_tool(&self, name: &ToolName) -> Option<&RegisteredTool> {
-        self.tools.get(&name.clone().with_default_namespace())
+        let name = self.resolve_tool_name(name.clone().with_default_namespace());
+        self.tools.get(&name)
     }
 
     #[cfg(test)]
@@ -751,7 +763,7 @@ impl ToolRegistry {
     }
 
     pub(crate) fn supports_parallel_tool_calls(&self, name: &ToolName) -> Option<bool> {
-        let tool = self.tools.get(&name.clone().with_default_namespace())?;
+        let tool = self.registered_tool(name)?;
         Some(tool.exposure != ToolExposure::Hidden && tool.runtime.supports_parallel_tool_calls())
     }
 

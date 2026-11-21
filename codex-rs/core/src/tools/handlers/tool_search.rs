@@ -272,6 +272,7 @@ impl ToolSearchHandler {
 
         let mut tools = self.search(query, limit);
         indirect_prefixes.apply_search(&mut tools);
+        let tools = step_context.tool_router.flatten_search_specs(tools);
 
         Ok(boxed_tool_output(ToolSearchOutput { tools }))
     }

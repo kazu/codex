@@ -48,6 +48,7 @@ pub use tool_catalog_cache::McpToolCatalogCache;
 pub use tool_request_meta::McpToolRequestMetaHook;
 pub use tool_request_meta::McpToolRequestMetaProvider;
 pub use tools::ToolInfo;
+pub use tools::make_unique_tool_name;
 pub use trusted_access::TrustedAccessContext;
 
 /// Backward-compatible name for the shared Codex Apps tools runtime.

@@ -3243,6 +3243,10 @@
           "description": "Whether hosted web search may access the live web.",
           "type": "boolean"
         },
+        "namespace_tools": {
+          "description": "Whether the provider accepts namespace-wrapped tools.",
+          "type": "boolean"
+        },
         "remote_compaction": {
           "allOf": [
             {

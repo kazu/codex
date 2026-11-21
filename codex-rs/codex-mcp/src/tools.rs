@@ -354,3 +354,12 @@ fn unique_callable_parts(
         attempt = attempt.saturating_add(1);
     }
 }
+
+/// Select a unique model-visible tool name using the MCP name length and collision rules.
+pub fn make_unique_tool_name(
+    name: &str,
+    identity: &str,
+    used_names: &mut HashSet<String>,
+) -> String {
+    unique_callable_parts("", name, identity, used_names, 0).1
+}
