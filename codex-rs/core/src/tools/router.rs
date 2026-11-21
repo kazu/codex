@@ -295,9 +295,14 @@ impl ToolRouter {
                 ref mut encrypted_function_args,
                 ..
             } => {
-                let tool_name = self.registry.resolve_tool_name(
-                    ToolName::new(namespace.clone(), name.clone()).with_default_namespace(),
-                );
+                let tool_name = self
+                    .registry
+                    .resolve_tool_name(
+                        ToolName::new(namespace.clone(), name.clone()).with_default_namespace(),
+                    )
+                    .ok_or_else(|| {
+                        FunctionCallError::RespondToModel(format!("unknown tool: {name}"))
+                    })?;
                 let retain_native_call = self
                     .registry
                     .registered_tool(&tool_name)
@@ -346,7 +351,12 @@ impl ToolRouter {
             } => Ok(Some(ToolCall {
                 tool_name: self
                     .registry
-                    .resolve_tool_name(ToolName::new(namespace, name).with_default_namespace()),
+                    .resolve_tool_name(
+                        ToolName::new(namespace, name.clone()).with_default_namespace(),
+                    )
+                    .ok_or_else(|| {
+                        FunctionCallError::RespondToModel(format!("unknown tool: {name}"))
+                    })?,
                 call_id,
                 payload: ToolPayload::Custom { input },
                 encrypted_function_args: None,

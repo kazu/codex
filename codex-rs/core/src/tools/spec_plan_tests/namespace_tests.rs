@@ -33,7 +33,11 @@ async fn provider_without_namespace_tools_exposes_mcp_as_function() {
         .visible_specs
         .iter()
         .find_map(|spec| match spec {
-            ToolSpec::Function(tool) if tool.name.starts_with("mcp__direct__lookup_") => Some(tool),
+            ToolSpec::Function(tool)
+                if tool.name.starts_with("__codex_ns__mcp__direct__lookup_") =>
+            {
+                Some(tool)
+            }
             _ => None,
         })
         .expect("the MCP tool must be advertised as a function");
@@ -65,7 +69,7 @@ async fn builtin_lmstudio_exposes_mcp_as_function() {
 
     assert!(probe.visible_specs.iter().any(|spec| matches!(
         spec,
-        ToolSpec::Function(tool) if tool.name.starts_with("mcp__direct__lookup_")
+        ToolSpec::Function(tool) if tool.name.starts_with("__codex_ns__mcp__direct__lookup_")
     )));
     probe.assert_visible_lacks(&["mcp__direct"]);
 }
@@ -112,7 +116,9 @@ async fn provider_without_namespace_tools_resolves_mcp_function_to_original_tool
     let name = specs
         .iter()
         .find_map(|spec| match spec {
-            ToolSpec::Function(tool) if tool.name.starts_with("mcp__direct__lookup_") => {
+            ToolSpec::Function(tool)
+                if tool.name.starts_with("__codex_ns__mcp__direct__lookup_") =>
+            {
                 Some(tool.name.as_str())
             }
             _ => None,
@@ -297,7 +303,7 @@ async fn provider_without_namespace_tools_flattens_mcp_search_results() {
             tool["type"] == "function"
                 && tool["name"]
                     .as_str()
-                    .is_some_and(|name| name.starts_with("mcp__searchable__lookup_"))
+                    .is_some_and(|name| name.starts_with("__codex_ns__mcp__searchable__lookup_"))
         })
         .expect("the search result must expose the MCP function");
     assert!(
@@ -306,4 +312,123 @@ async fn provider_without_namespace_tools_flattens_mcp_search_results() {
             .unwrap()
             .contains("Tools from searchable.")
     );
+}
+
+#[tokio::test]
+async fn flattened_mcp_name_does_not_call_a_later_plain_tool() {
+    let (_session, mut turn) = make_session_and_context().await;
+    disable_namespace_tools(&mut turn);
+    let original = plan_with_model(
+        &turn,
+        turn.model_info(),
+        ToolPlanInputs {
+            tool_runtimes: vec![mcp_runtime(
+                "first",
+                "mcp__example",
+                "lookup",
+                ToolExposure::Direct,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    );
+    let original_name = original
+        .model_visible_specs()
+        .iter()
+        .find_map(|spec| match spec {
+            ToolSpec::Function(tool) if tool.description.contains("lookup test tool") => {
+                Some(tool.name.clone())
+            }
+            _ => None,
+        })
+        .expect("the MCP tool must be advertised");
+    let refreshed = plan_with_model(
+        &turn,
+        turn.model_info(),
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(None, &original_name, false)],
+            tool_runtimes: vec![mcp_runtime(
+                "first",
+                "mcp__example",
+                "lookup",
+                ToolExposure::Direct,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    );
+    let make_call =
+        |name: &str| {
+            refreshed.build_tool_call(serde_json::from_value(json!({
+        "type": "function_call", "name": name, "arguments": "{}", "call_id": "collision"
+    })).unwrap()).unwrap().unwrap()
+        };
+    assert_eq!(
+        make_call(&original_name).tool_name,
+        ToolName::namespaced("mcp__example", "lookup")
+    );
+    let specs = refreshed.model_visible_specs();
+    let renamed_plain = specs
+        .iter()
+        .find_map(|spec| match spec {
+            ToolSpec::Function(tool)
+                if tool.description == format!("{original_name} dynamic tool") =>
+            {
+                Some(tool.name.as_str())
+            }
+            _ => None,
+        })
+        .expect("the plain tool must still be advertised");
+    assert_ne!(renamed_plain, original_name);
+    let plain_call = make_call(renamed_plain);
+    assert_eq!(
+        plain_call.tool_name,
+        ToolName::plain(&original_name).with_default_namespace()
+    );
+    assert_eq!(
+        refreshed
+            .registered_tool(&plain_call.tool_name)
+            .unwrap()
+            .runtime
+            .tool_name()
+            .with_default_namespace(),
+        ToolName::plain(&original_name).with_default_namespace()
+    );
+}
+
+#[tokio::test]
+async fn removed_mcp_alias_does_not_call_a_plain_tool() {
+    let (_session, mut turn) = make_session_and_context().await;
+    disable_namespace_tools(&mut turn);
+    let original = plan_with_model(
+        &turn,
+        turn.model_info(),
+        ToolPlanInputs {
+            tool_runtimes: vec![mcp_runtime(
+                "first",
+                "mcp__example",
+                "lookup",
+                ToolExposure::Direct,
+            )],
+            ..ToolPlanInputs::default()
+        },
+    );
+    let original_name = original
+        .model_visible_specs()
+        .iter()
+        .find_map(|spec| match spec {
+            ToolSpec::Function(tool) if tool.description.contains("lookup test tool") => {
+                Some(tool.name.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let refreshed = plan_with_model(
+        &turn,
+        turn.model_info(),
+        ToolPlanInputs {
+            dynamic_tools: vec![dynamic_tool(None, &original_name, false)],
+            ..ToolPlanInputs::default()
+        },
+    );
+    let item = serde_json::from_value(json!({"type": "function_call", "name": original_name, "arguments": "{}", "call_id": "stale"})).unwrap();
+    assert!(refreshed.build_tool_call(item).is_err());
 }
