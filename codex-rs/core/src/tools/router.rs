@@ -274,6 +274,13 @@ impl ToolRouter {
         self.registry.registered_tool(tool_name)
     }
 
+    pub(crate) fn flatten_search_specs(
+        &self,
+        specs: Vec<codex_tools::LoadableToolSpec>,
+    ) -> Vec<codex_tools::LoadableToolSpec> {
+        self.registry.flatten_search_specs(specs)
+    }
+
     #[instrument(level = "trace", skip_all, err)]
     pub fn build_tool_call(
         &self,
@@ -288,8 +295,9 @@ impl ToolRouter {
                 ref mut encrypted_function_args,
                 ..
             } => {
-                let tool_name =
-                    ToolName::new(namespace.clone(), name.clone()).with_default_namespace();
+                let tool_name = self.registry.resolve_tool_name(
+                    ToolName::new(namespace.clone(), name.clone()).with_default_namespace(),
+                );
                 let retain_native_call = self
                     .registry
                     .registered_tool(&tool_name)
@@ -336,7 +344,9 @@ impl ToolRouter {
                 call_id,
                 ..
             } => Ok(Some(ToolCall {
-                tool_name: ToolName::new(namespace, name).with_default_namespace(),
+                tool_name: self
+                    .registry
+                    .resolve_tool_name(ToolName::new(namespace, name).with_default_namespace()),
                 call_id,
                 payload: ToolPayload::Custom { input },
                 encrypted_function_args: None,

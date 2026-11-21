@@ -51,6 +51,8 @@ pub enum LoadableToolSpec {
     #[allow(dead_code)]
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
+    #[serde(rename = "custom")]
+    Custom(FreeformTool),
     #[serde(rename = "namespace")]
     Namespace(ResponsesApiNamespace),
 }
@@ -97,6 +99,9 @@ pub fn coalesce_loadable_tool_specs(
             LoadableToolSpec::Function(tool) => {
                 coalesced_specs.push(LoadableToolSpec::Function(tool));
             }
+            LoadableToolSpec::Custom(tool) => {
+                coalesced_specs.push(LoadableToolSpec::Custom(tool));
+            }
             LoadableToolSpec::Namespace(mut namespace) => {
                 if let Some(existing_namespace) =
                     coalesced_specs.iter_mut().find_map(|spec| match spec {
@@ -105,7 +110,9 @@ pub fn coalesce_loadable_tool_specs(
                         {
                             Some(existing_namespace)
                         }
-                        LoadableToolSpec::Function(_) | LoadableToolSpec::Namespace(_) => None,
+                        LoadableToolSpec::Function(_)
+                        | LoadableToolSpec::Custom(_)
+                        | LoadableToolSpec::Namespace(_) => None,
                     })
                 {
                     existing_namespace.tools.append(&mut namespace.tools);

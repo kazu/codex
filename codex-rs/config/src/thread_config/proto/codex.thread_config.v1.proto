@@ -58,6 +58,7 @@ message ModelProvider {
 
 message ModelProviderCapabilities {
   optional bool cyber_access_programs = 1;
+  optional bool namespace_tools = 2;
 }
 
 message StringMap {

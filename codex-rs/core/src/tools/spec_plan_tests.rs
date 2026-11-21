@@ -1,3 +1,6 @@
+#[path = "spec_plan_tests/namespace_tests.rs"]
+mod namespace_tests;
+
 use crate::session::tests::update_turn_settings_for_test;
 use codex_mcp::McpServerKey;
 use std::collections::BTreeMap;

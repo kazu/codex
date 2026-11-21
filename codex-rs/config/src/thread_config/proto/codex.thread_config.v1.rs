@@ -92,6 +92,8 @@ pub struct ModelProvider {
 pub struct ModelProviderCapabilities {
     #[prost(bool, optional, tag = "1")]
     pub cyber_access_programs: ::core::option::Option<bool>,
+    #[prost(bool, optional, tag = "2")]
+    pub namespace_tools: ::core::option::Option<bool>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct StringMap {

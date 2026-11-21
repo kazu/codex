@@ -1,3 +1,6 @@
+#[path = "model_provider_info_tests/namespace_tests.rs"]
+mod namespace_tests;
+
 use super::*;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;

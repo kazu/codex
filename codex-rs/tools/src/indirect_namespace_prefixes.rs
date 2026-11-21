@@ -162,6 +162,11 @@ fn prepend(prefix: &str, description: &mut String) {
     };
 }
 
+/// Prepend a description prefix using the same separator as namespace prefixes.
+pub fn prepend_description(prefix: &str, description: &mut String) {
+    prepend(prefix, description);
+}
+
 fn namespace_name(name: &ToolName) -> &str {
     name.namespace
         .as_deref()

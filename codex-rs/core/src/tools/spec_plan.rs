@@ -568,6 +568,24 @@ pub(crate) fn finalize_tool_router(
         &code_mode_tool_names,
         hosted_specs,
     );
+    if turn_context
+        .config
+        .model_provider
+        .capabilities
+        .and_then(|capabilities| capabilities.namespace_tools)
+        == Some(false)
+    {
+        let search_visible = search_exposure.is_some_and(|exposure| {
+            !is_hidden_by_code_mode_only(
+                turn_context,
+                model_info,
+                &ToolName::plain(TOOL_SEARCH_TOOL_NAME),
+                exposure,
+            )
+        });
+        registry.configure_flat_tool_names(&model_visible_specs, search_visible);
+    }
+    let model_visible_specs = registry.flatten_tool_specs(model_visible_specs);
     let tool_namespaces_info = include_tool_namespaces_info
         .then(|| {
             collect_tool_namespaces_info(&registry, &code_mode_tool_names, &model_visible_specs)

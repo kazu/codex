@@ -24,6 +24,10 @@ use proto::thread_config_loader_client::ThreadConfigLoaderClient;
 #[path = "proto/codex.thread_config.v1.rs"]
 mod proto;
 
+#[cfg(test)]
+#[path = "remote_namespace_tests.rs"]
+mod namespace_tests;
+
 const REMOTE_THREAD_CONFIG_LOAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// gRPC-backed [`ThreadConfigLoader`] implementation.
@@ -200,6 +204,7 @@ fn model_provider_from_proto(
             .capabilities
             .map(|capabilities| ModelProviderCapabilities {
                 cyber_access_programs: capabilities.cyber_access_programs,
+                namespace_tools: capabilities.namespace_tools,
                 ..Default::default()
             }),
         project_id: provider.project_id,
@@ -255,6 +260,7 @@ fn model_provider_to_proto(
         auth: auth.map(model_provider_auth_to_proto),
         capabilities: capabilities.map(|capabilities| proto::ModelProviderCapabilities {
             cyber_access_programs: capabilities.cyber_access_programs,
+            namespace_tools: capabilities.namespace_tools,
         }),
         wire_api: proto_wire_api(wire_api).into(),
         query_params: query_params.map(proto_string_map),
@@ -521,6 +527,7 @@ mod tests {
                             ),
                             capabilities: Some(proto::ModelProviderCapabilities {
                                 cyber_access_programs: Some(true),
+                                namespace_tools: None,
                             }),
                             credential_file: None,
                             env_key: None,

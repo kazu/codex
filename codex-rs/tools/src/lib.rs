@@ -39,6 +39,7 @@ pub use image_detail::normalize_output_image_detail;
 pub use image_detail::sanitize_original_image_detail;
 pub use indirect_namespace_prefixes::IndirectNamespacePrefixConflict;
 pub use indirect_namespace_prefixes::IndirectNamespacePrefixes;
+pub use indirect_namespace_prefixes::prepend_description;
 pub use json_schema::AdditionalProperties;
 pub use json_schema::JsonSchema;
 pub use json_schema::JsonSchemaPrimitiveType;

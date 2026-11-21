@@ -765,6 +765,11 @@ pub fn built_in_model_providers(
     let amazon_bedrock_runtime_provider =
         P::create_amazon_bedrock_runtime_provider(/*aws*/ None);
     let gcp_provider = P::create_gcp_provider();
+    let mut lmstudio_provider = create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses);
+    lmstudio_provider.capabilities = Some(ModelProviderCapabilities {
+        namespace_tools: Some(false),
+        ..Default::default()
+    });
 
     // Bundle OpenAI, supported cloud-hosted OpenAI backends, and local OSS providers.
     // Other compatible providers can be added through `model_providers` in config.toml.
@@ -780,10 +785,7 @@ pub fn built_in_model_providers(
             OLLAMA_OSS_PROVIDER_ID,
             create_oss_provider(DEFAULT_OLLAMA_PORT, WireApi::Responses),
         ),
-        (
-            LMSTUDIO_OSS_PROVIDER_ID,
-            create_oss_provider(DEFAULT_LMSTUDIO_PORT, WireApi::Responses),
-        ),
+        (LMSTUDIO_OSS_PROVIDER_ID, lmstudio_provider),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))

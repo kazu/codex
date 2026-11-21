@@ -1,3 +1,6 @@
+#[path = "code_mode_tests/namespace_tests.rs"]
+mod namespace_tests;
+
 use super::augment_tool_spec_for_code_mode as augment_tool_spec_with_budget;
 use super::code_mode_name_for_tool_name;
 use super::tool_spec_to_code_mode_tool_definition;
