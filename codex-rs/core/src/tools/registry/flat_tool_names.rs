@@ -1,13 +1,14 @@
 use super::*;
 
+const NAMESPACE_PREFIX: &str = "__codex_ns__";
+const PLAIN_PREFIX: &str = "__codex_plain__";
+
 impl ToolRegistry {
     pub(crate) fn configure_flat_tool_names(
         &mut self,
         visible_specs: &[ToolSpec],
         search_visible: bool,
     ) {
-        const NAMESPACE_PREFIX: &str = "__codex_ns__";
-        const PLAIN_PREFIX: &str = "__codex_plain__";
         let is_reserved =
             |name: &str| name.starts_with(NAMESPACE_PREFIX) || name.starts_with(PLAIN_PREFIX);
         let mut used_names: HashSet<String> = self
@@ -20,18 +21,9 @@ impl ToolRegistry {
             .tools
             .iter()
             .filter(|(name, tool)| {
-                search_visible && tool.exposure.is_deferred() && !name.is_default_namespace()
-            })
-            .map(|(name, _)| name.clone())
-            .collect::<BTreeSet<_>>();
-        let mut reserved_plain = self
-            .tools
-            .iter()
-            .filter(|(name, tool)| {
                 search_visible
                     && tool.exposure.is_deferred()
-                    && name.is_default_namespace()
-                    && is_reserved(&name.name)
+                    && (!name.is_default_namespace() || is_reserved(&name.name))
             })
             .map(|(name, _)| name.clone())
             .collect::<BTreeSet<_>>();
@@ -45,17 +37,15 @@ impl ToolRegistry {
                         };
                         let name = ToolName::namespaced(&namespace.name, tool_name)
                             .with_default_namespace();
-                        if !name.is_default_namespace() {
+                        if !name.is_default_namespace() || is_reserved(&name.name) {
                             names.insert(name);
-                        } else if is_reserved(&name.name) {
-                            reserved_plain.insert(name);
                         } else {
                             used_names.insert(name.name);
                         }
                     }
                 }
                 _ if is_reserved(spec.name()) => {
-                    reserved_plain.insert(ToolName::plain(spec.name()).with_default_namespace());
+                    names.insert(ToolName::plain(spec.name()).with_default_namespace());
                 }
                 _ => {
                     used_names.insert(spec.name().to_string());
@@ -63,7 +53,7 @@ impl ToolRegistry {
             }
         }
         let mut flat_names = BTreeMap::new();
-        for name in names.into_iter().chain(reserved_plain) {
+        for name in names {
             let preferred = if name.is_default_namespace() {
                 format!("{PLAIN_PREFIX}{}", name.name)
             } else {
@@ -85,17 +75,24 @@ impl ToolRegistry {
         self.flat_tool_names = Some(flat_names);
     }
 
-    pub(crate) fn resolve_tool_name(&self, name: ToolName) -> Option<ToolName> {
+    pub(crate) fn resolve_tool_name(&self, name: ToolName) -> ToolName {
         if let Some(original) = self.flat_tool_aliases.get(&name) {
-            return Some(original.clone());
+            return original.clone();
         }
         if self.flat_tool_names.is_some()
             && name.is_default_namespace()
-            && (name.name.starts_with("__codex_ns__") || name.name.starts_with("__codex_plain__"))
+            && (name.name.starts_with(NAMESPACE_PREFIX) || name.name.starts_with(PLAIN_PREFIX))
         {
-            return None;
+            let mut namespace = "__codex_unknown_flat_tool__".to_string();
+            while self
+                .tools
+                .contains_key(&ToolName::namespaced(&namespace, &name.name))
+            {
+                namespace.push('_');
+            }
+            return ToolName::namespaced(namespace, name.name);
         }
-        Some(name)
+        name
     }
 
     pub(crate) fn flatten_tool_specs(&self, specs: Vec<ToolSpec>) -> Vec<ToolSpec> {

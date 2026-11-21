@@ -425,10 +425,25 @@ async fn removed_mcp_alias_does_not_call_a_plain_tool() {
         &turn,
         turn.model_info(),
         ToolPlanInputs {
-            dynamic_tools: vec![dynamic_tool(None, &original_name, false)],
+            dynamic_tools: vec![
+                dynamic_tool(None, &original_name, false),
+                dynamic_tool(Some("__codex_unknown_flat_tool__"), &original_name, false),
+            ],
             ..ToolPlanInputs::default()
         },
     );
     let item = serde_json::from_value(json!({"type": "function_call", "name": original_name, "arguments": "{}", "call_id": "stale"})).unwrap();
-    assert!(refreshed.build_tool_call(item).is_err());
+    let call = refreshed
+        .build_tool_call(item)
+        .expect("stale calls must retain their call ID")
+        .unwrap();
+    assert_eq!(call.call_id, "stale");
+    assert!(refreshed.registered_tool(&call.tool_name).is_none());
+    let custom = serde_json::from_value(json!({"type": "custom_tool_call", "name": original_name, "input": "", "call_id": "stale-custom"})).unwrap();
+    let custom_call = refreshed
+        .build_tool_call(custom)
+        .expect("stale custom calls must retain their call ID")
+        .unwrap();
+    assert_eq!(custom_call.call_id, "stale-custom");
+    assert!(refreshed.registered_tool(&custom_call.tool_name).is_none());
 }

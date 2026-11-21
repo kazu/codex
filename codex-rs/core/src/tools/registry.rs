@@ -738,10 +738,9 @@ impl ToolRegistry {
 
     pub(crate) fn registered_tool(&self, name: &ToolName) -> Option<&RegisteredTool> {
         let name = name.clone().with_default_namespace();
-        self.tools.get(&name).or_else(|| {
-            self.resolve_tool_name(name)
-                .and_then(|name| self.tools.get(&name))
-        })
+        self.tools
+            .get(&name)
+            .or_else(|| self.tools.get(&self.resolve_tool_name(name)))
     }
 
     #[cfg(test)]
